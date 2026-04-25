@@ -151,6 +151,27 @@ async def delete_app(app_id: int, x_admin_key: str = Header(None)):
     db.delete_app(app_id)
     return {"message": "App deleted successfully"}
 
+@app.get("/admin/logs", tags=["Admin"])
+async def get_message_logs(limit: int = 50, x_admin_key: str = Header(None)):
+    if x_admin_key != MASTER_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT m.*, a.name as app_name 
+            FROM messages m 
+            JOIN apps a ON m.app_id = a.id 
+            ORDER BY m.created_at DESC 
+            LIMIT %s
+        """, (limit,))
+        logs = cursor.fetchall()
+        return [dict(log) for log in logs]
+    finally:
+        cursor.close()
+        conn.close()
+
 @app.get("/admin/balance", tags=["Admin"])
 async def get_master_balance(service: VynfyService = Depends(get_vynfy_service), x_admin_key: str = Header(None)):
     if x_admin_key != MASTER_KEY:
@@ -265,11 +286,18 @@ async def send_sms(
             metadata=request.metadata
         )
         
-        if result.get("success") and "data" in result:
-            job_id = result["data"].get("job_id")
+        # Track message mapping for webhooks
+        if result.get("success"):
+            # Check both 'job_id' and 'message_id' in case Vynfy returns either
+            data_block = result.get("data", {})
+            job_id = data_block.get("job_id") or data_block.get("message_id")
+            
             if job_id:
+                print(f"[STORE] Storing job_id: {job_id} for app: {app_data['name']}")
                 db.store_message(job_id, app_data['id'], 'sms')
                 db.increment_usage(app_data['id'], 'sms', len(recipients))
+            else:
+                print(f"[STORE WARNING] No job_id found in Vynfy response: {result}")
         
         return result
     except Exception as e:
@@ -428,15 +456,21 @@ async def vynfy_webhook(request: Request):
     
     if message_id:
         app_target = db.get_app_by_message_id(message_id)
-        if app_target and app_target['webhook_url']:
-            try:
-                async with httpx.AsyncClient() as client:
-                    print(f"Forwarding to {app_target['webhook_url']}")
-                    await client.post(app_target['webhook_url'], json=payload, timeout=5.0)
-            except Exception as e:
-                print(f"Failed to forward webhook to {app_target['name']}: {str(e)}")
+        if app_target:
+            # Update status in our DB
+            db.update_message_status(message_id, event)
+            
+            if app_target['webhook_url']:
+                try:
+                    async with httpx.AsyncClient() as client:
+                        print(f"Forwarding {event} to {app_target['webhook_url']}")
+                        await client.post(app_target['webhook_url'], json=payload, timeout=5.0)
+                except Exception as e:
+                    print(f"Failed to forward webhook to {app_target['name']}: {str(e)}")
+            else:
+                print(f"No webhook URL set for app {app_target['name']}, status updated locally only.")
         else:
-            print(f"No target app or webhook URL found for message {message_id}")
+            print(f"CRITICAL: No target app found for message_id: {message_id}. Check if it was stored correctly.")
             
     return {"status": "success", "message": "Webhook processed by bridge"}
 

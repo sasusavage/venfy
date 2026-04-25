@@ -47,6 +47,8 @@
             padding: 2rem;
             display: flex;
             flex-direction: column;
+            position: fixed;
+            height: 100vh;
         }
 
         .logo {
@@ -70,6 +72,7 @@
             align-items: center;
             gap: 0.75rem;
             cursor: pointer;
+            font-weight: 500;
         }
 
         .nav-item.active, .nav-item:hover {
@@ -80,9 +83,23 @@
         /* Main Content */
         .main-content {
             flex: 1;
+            margin-left: 260px;
             padding: 2.5rem;
-            max-width: 1200px;
-            margin: 0 auto;
+            max-width: 1400px;
+        }
+
+        .view-section {
+            display: none;
+        }
+
+        .view-section.active {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
 
         .header {
@@ -132,6 +149,7 @@
             border: 1px solid var(--border);
             overflow: hidden;
             box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            margin-bottom: 2rem;
         }
 
         .card-header {
@@ -177,6 +195,8 @@
 
         .badge-success { background: #d1fae5; color: #065f46; }
         .badge-warning { background: #fef3c7; color: #92400e; }
+        .badge-danger { background: #fee2e2; color: #b91c1c; }
+        .badge-info { background: #e0f2fe; color: #0369a1; }
 
         /* Buttons */
         .btn {
@@ -217,10 +237,6 @@
             color: var(--danger);
         }
 
-        .btn-danger:hover {
-            background: #fecaca;
-        }
-
         /* Modal */
         .modal-overlay {
             position: fixed;
@@ -232,7 +248,7 @@
             display: none;
             justify-content: center;
             align-items: center;
-            z-index: 100;
+            z-index: 1000;
             backdrop-filter: blur(4px);
         }
 
@@ -256,7 +272,7 @@
             margin-bottom: 0.5rem;
         }
 
-        .form-group input {
+        .form-group input, .form-group textarea {
             width: 100%;
             padding: 0.75rem 1rem;
             border-radius: 0.5rem;
@@ -287,11 +303,6 @@
             margin-top: 0.5rem;
             display: block;
         }
-        
-        .action-btns {
-            display: flex;
-            gap: 0.5rem;
-        }
     </style>
 </head>
 <body>
@@ -300,57 +311,139 @@
             <div class="logo">
                 <span>🛰️</span> Venfy Bridge
             </div>
-            <nav>
-                <div class="nav-item active">Dashboard</div>
-                <div class="nav-item">Applications</div>
-                <div class="nav-item">Logs</div>
-                <div class="nav-item">Settings</div>
+            <nav id="sidebar-nav">
+                <div class="nav-item active" data-view="dashboard">📊 Dashboard</div>
+                <div class="nav-item" data-view="applications">📱 Applications</div>
+                <div class="nav-item" data-view="logs">📜 Logs</div>
+                <div class="nav-item" data-view="sender-ids">🛡️ Sender IDs</div>
             </nav>
         </aside>
 
         <main class="main-content">
-            <div class="header">
-                <h1>Overview</h1>
-                <div style="display: flex; gap: 1rem;">
-                    <button class="btn btn-outline" onclick="fetchData()">Refresh</button>
+            <!-- DASHBOARD VIEW -->
+            <section id="view-dashboard" class="view-section active">
+                <div class="header">
+                    <h1>Overview</h1>
+                    <div style="display: flex; gap: 1rem;">
+                        <button class="btn btn-outline" onclick="fetchData()">Refresh</button>
+                        <button class="btn btn-primary" onclick="showModal()">+ New Application</button>
+                    </div>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="label">Main SMS Balance</div>
+                        <div class="value" id="main-sms-balance">...</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="label">Main OTP Balance</div>
+                        <div class="value" id="main-otp-balance">...</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="label">Total Tenants</div>
+                        <div class="value" id="total-tenants">0</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h2 style="font-size: 1.25rem; font-weight: 700;">Recent Applications</h2>
+                    </div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>SMS Usage</th>
+                                <th>OTP Usage</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="app-table-body-short">
+                            <!-- Short list of apps -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- APPLICATIONS VIEW -->
+            <section id="view-applications" class="view-section">
+                <div class="header">
+                    <h1>Applications</h1>
                     <button class="btn btn-primary" onclick="showModal()">+ New Application</button>
                 </div>
-            </div>
+                <div class="card">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>API Key</th>
+                                <th>Webhook URL</th>
+                                <th>SMS Usage</th>
+                                <th>OTP Usage</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="app-table-body-full">
+                            <!-- Full list of apps -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
 
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <div class="label">Main SMS Balance</div>
-                    <div class="value" id="main-sms-balance">...</div>
+            <!-- LOGS VIEW -->
+            <section id="view-logs" class="view-section">
+                <div class="header">
+                    <h1>Message Logs</h1>
+                    <button class="btn btn-outline" onclick="fetchLogs()">🔄 Sync Statuses</button>
                 </div>
-                <div class="stat-card">
-                    <div class="label">Main OTP Balance</div>
-                    <div class="value" id="main-otp-balance">...</div>
+                <div class="card">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>App</th>
+                                <th>Type</th>
+                                <th>Message ID</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="logs-table-body">
+                            <!-- Logs will be loaded here -->
+                        </tbody>
+                    </table>
                 </div>
-                <div class="stat-card">
-                    <div class="label">Total Tenants</div>
-                    <div class="value" id="total-tenants">0</div>
-                </div>
-            </div>
+            </section>
 
-            <div class="card">
-                <div class="card-header">
-                    <h2 style="font-size: 1.25rem; font-weight: 700;">Tenant Applications</h2>
+            <!-- SENDER IDS VIEW -->
+            <section id="view-sender-ids" class="view-section">
+                <div class="header">
+                    <h1>Sender ID Registration</h1>
                 </div>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>API Key</th>
-                            <th>SMS Usage</th>
-                            <th>OTP Usage</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="app-table-body">
-                        <!-- Apps will be loaded here -->
-                    </tbody>
-                </table>
-            </div>
+                <div class="card" style="padding: 2rem; margin-bottom: 2rem;">
+                    <h3 style="margin-bottom: 1rem;">Register New Sender ID</h3>
+                    <form id="sender-id-form">
+                        <div class="form-group">
+                            <label>Sender Name (Max 11 chars)</label>
+                            <input type="text" id="sid-name" maxlength="11" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Purpose / Description</label>
+                            <textarea id="sid-purpose" rows="2" required></textarea>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Submit Registration</button>
+                    </form>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Check ID Status</h3>
+                    </div>
+                    <div style="padding: 1.5rem; display: flex; gap: 1rem;">
+                        <input type="text" id="sid-check-name" placeholder="Enter Sender Name" class="btn btn-outline" style="flex: 1; cursor: text;">
+                        <button class="btn btn-outline" onclick="checkSenderId()">Check Status</button>
+                    </div>
+                    <div id="sid-result" style="padding: 0 1.5rem 1.5rem 1.5rem; font-weight: 600;"></div>
+                </div>
+            </section>
         </main>
     </div>
 
@@ -381,7 +474,7 @@
                 <div id="new-key-container" class="key-display">
                     <strong style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.25rem;">NEW API KEY:</strong>
                     <span id="generated-key"></span>
-                    <span class="copy-btn" onclick="copyKey()">Copy Key</span>
+                    <span class="copy-btn" onclick="copyValue(document.getElementById('generated-key').textContent)">Copy Key</span>
                 </div>
 
                 <div style="display: flex; justify-content: flex-end; gap: 1rem; margin-top: 1.5rem;">
@@ -395,99 +488,150 @@
     <script>
         const ADMIN_KEY = 'venfy_master_secret_2024';
 
+        // Tab Switching
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const viewId = item.getAttribute('data-view');
+                
+                // Update Sidebar
+                document.querySelectorAll('.nav-item').forEach(nav => nav.classList.remove('active'));
+                item.classList.add('active');
+                
+                // Update Views
+                document.querySelectorAll('.view-section').forEach(section => section.classList.remove('active'));
+                document.getElementById('view-' + viewId).classList.add('active');
+
+                // Auto-fetch data based on view
+                if(viewId === 'logs') fetchLogs();
+                if(viewId === 'applications' || viewId === 'dashboard') fetchData();
+            });
+        });
+
         async function fetchData() {
             try {
-                // Fetch Apps
-                const appsRes = await fetch('/admin/apps', {
-                    headers: { 'X-Admin-Key': ADMIN_KEY }
-                });
+                const appsRes = await fetch('/admin/apps', { headers: { 'X-Admin-Key': ADMIN_KEY } });
                 const apps = await appsRes.json();
                 
-                const tableBody = document.getElementById('app-table-body');
-                tableBody.innerHTML = '';
                 document.getElementById('total-tenants').textContent = apps.length;
 
-                apps.forEach(app => {
-                    const tr = document.createElement('tr');
-                    const smsPercent = Math.min(100, (app.sms_used / app.sms_limit) * 100);
-                    const otpPercent = Math.min(100, (app.otp_used / app.otp_limit) * 100);
-                    
-                    tr.innerHTML = `
-                        <td style="font-weight: 600;">${app.name}</td>
-                        <td style="font-family: monospace; color: var(--text-muted); font-size: 0.75rem;">
-                            ${app.api_key.substring(0, 12)}...
-                            <button class="btn btn-sm btn-outline" onclick="copyValue('${app.api_key}')" style="padding: 0 4px; margin-left: 4px;">Copy</button>
-                        </td>
-                        <td>
-                            ${app.sms_used} / ${app.sms_limit}
-                            <div style="width: 100px; height: 4px; background: #eee; margin-top: 4px; border-radius: 2px; overflow: hidden;">
-                                <div style="width: ${smsPercent}%; height: 100%; background: var(--primary);"></div>
-                            </div>
-                        </td>
-                        <td>
-                             ${app.otp_used} / ${app.otp_limit}
-                             <div style="width: 100px; height: 4px; background: #eee; margin-top: 4px; border-radius: 2px; overflow: hidden;">
-                                <div style="width: ${otpPercent}%; height: 100%; background: var(--warning);"></div>
-                            </div>
-                        </td>
-                        <td>
-                            <div class="action-btns">
-                                <button class="btn btn-sm btn-outline" onclick="resetUsage(${app.id})">Reset</button>
-                                <button class="btn btn-sm btn-danger" onclick="deleteApp(${app.id})">Del</button>
-                            </div>
-                        </td>
-                    `;
-                    tableBody.appendChild(tr);
-                });
+                const renderTable = (apps, containerId, isFull) => {
+                    const container = document.getElementById(containerId);
+                    container.innerHTML = '';
+                    apps.forEach(app => {
+                        const tr = document.createElement('tr');
+                        const smsPercent = Math.min(100, (app.sms_used / app.sms_limit) * 100);
+                        const otpPercent = Math.min(100, (app.otp_used / app.otp_limit) * 100);
+                        
+                        tr.innerHTML = `
+                            <td style="font-weight: 600;">${app.name}</td>
+                            ${isFull ? `<td style="font-family: monospace; font-size: 0.75rem;">${app.api_key.substring(0,8)}... <button class="btn btn-sm" onclick="copyValue('${app.api_key}')">📋</button></td>` : ''}
+                            ${isFull ? `<td style="font-size: 0.75rem; color: var(--text-muted);">${app.webhook_url || '-'}</td>` : ''}
+                            <td>
+                                ${app.sms_used} / ${app.sms_limit}
+                                <div style="width: 100px; height: 4px; background: #eee; margin-top: 4px; border-radius: 2px; overflow: hidden;">
+                                    <div style="width: ${smsPercent}%; height: 100%; background: var(--primary);"></div>
+                                </div>
+                            </td>
+                            <td>
+                                ${app.otp_used} / ${app.otp_limit}
+                                <div style="width: 100px; height: 4px; background: #eee; margin-top: 4px; border-radius: 2px; overflow: hidden;">
+                                    <div style="width: ${otpPercent}%; height: 100%; background: var(--warning);"></div>
+                                </div>
+                            </td>
+                            <td>
+                                <div style="display: flex; gap: 4px;">
+                                    <button class="btn btn-sm btn-outline" onclick="resetUsage(${app.id})">Reset</button>
+                                    <button class="btn btn-sm btn-danger" onclick="deleteApp(${app.id})">Del</button>
+                                </div>
+                            </td>
+                        `;
+                        container.appendChild(tr);
+                    });
+                };
+
+                renderTable(apps.slice(0, 5), 'app-table-body-short', false);
+                renderTable(apps, 'app-table-body-full', true);
 
                 // Fetch Balance
-                const balRes = await fetch('/admin/balance', {
-                    headers: { 'X-Admin-Key': ADMIN_KEY }
-                });
+                const balRes = await fetch('/admin/balance', { headers: { 'X-Admin-Key': ADMIN_KEY } });
                 const balance = await balRes.json();
-                
-                document.getElementById('main-sms-balance').textContent = balance.sms !== null ? balance.sms : 'N/A';
-                document.getElementById('main-otp-balance').textContent = balance.otp !== null ? balance.otp : 'N/A';
+                document.getElementById('main-sms-balance').textContent = balance.sms;
+                document.getElementById('main-otp-balance').textContent = balance.otp;
 
-            } catch (err) {
-                console.error('Failed to fetch data', err);
-            }
+            } catch (err) { console.error(err); }
+        }
+
+        async function fetchLogs() {
+            try {
+                const res = await fetch('/admin/logs', { headers: { 'X-Admin-Key': ADMIN_KEY } });
+                const logs = await res.json();
+                const container = document.getElementById('logs-table-body');
+                container.innerHTML = '';
+                logs.forEach(log => {
+                    const tr = document.createElement('tr');
+                    const time = new Date(log.created_at).toLocaleString();
+                    const statusClass = log.vynfy_status === 'delivered' || log.vynfy_status === 'verified' ? 'badge-success' : 
+                                        (log.vynfy_status === 'failed' || log.vynfy_status === 'expired' ? 'badge-danger' : 'badge-info');
+                    
+                    tr.innerHTML = `
+                        <td style="font-size: 0.75rem; color: var(--text-muted);">${time}</td>
+                        <td style="font-weight: 600;">${log.app_name}</td>
+                        <td style="text-transform: uppercase; font-size: 0.7rem;">${log.type}</td>
+                        <td style="font-family: monospace; font-size: 0.75rem;">${log.vynfy_message_id}</td>
+                        <td><span class="badge ${statusClass}">${log.vynfy_status || 'sent'}</span></td>
+                    `;
+                    container.appendChild(tr);
+                });
+            } catch (err) { console.error(err); }
         }
 
         async function resetUsage(id) {
-            if(!confirm('Reset usage limits for this app?')) return;
-            await fetch(`/admin/apps/${id}/reset`, {
-                method: 'POST',
-                headers: { 'X-Admin-Key': ADMIN_KEY }
-            });
+            if(!confirm('Reset usage?')) return;
+            await fetch(`/admin/apps/${id}/reset`, { method: 'POST', headers: { 'X-Admin-Key': ADMIN_KEY } });
             fetchData();
         }
 
         async function deleteApp(id) {
-            if(!confirm('Permanently delete this app and all its message logs?')) return;
-            await fetch(`/admin/apps/${id}`, {
-                method: 'DELETE',
-                headers: { 'X-Admin-Key': ADMIN_KEY }
-            });
+            if(!confirm('Delete app?')) return;
+            await fetch(`/admin/apps/${id}`, { method: 'DELETE', headers: { 'X-Admin-Key': ADMIN_KEY } });
             fetchData();
+        }
+
+        // Sender ID Logic
+        document.getElementById('sender-id-form').onsubmit = async (e) => {
+            e.preventDefault();
+            const name = document.getElementById('sid-name').value;
+            const purpose = document.getElementById('sid-purpose').value;
+            try {
+                const res = await fetch('/sender/id/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-API-Key': ADMIN_KEY }, // Use Master Key for direct reg
+                    body: JSON.stringify({ sender_name: name, purpose: purpose })
+                });
+                const data = await res.json();
+                alert(data.message || 'Submitted successfully');
+            } catch (err) { alert('Failed to register'); }
+        };
+
+        async function checkSenderId() {
+            const name = document.getElementById('sid-check-name').value;
+            if(!name) return;
+            try {
+                const res = await fetch(`/sender/id/status?sender_name=${name}`, {
+                    headers: { 'X-API-Key': ADMIN_KEY }
+                });
+                const data = await res.json();
+                document.getElementById('sid-result').textContent = `Status: ${data.status.toUpperCase()} (Purpose: ${data.purpose})`;
+            } catch (err) { document.getElementById('sid-result').textContent = 'Sender ID not found or error'; }
         }
 
         function copyValue(val) {
             navigator.clipboard.writeText(val);
-            alert('Copied to clipboard');
+            alert('Copied!');
         }
 
-        function showModal() {
-            document.getElementById('modal-overlay').style.display = 'flex';
-            document.getElementById('new-key-container').style.display = 'none';
-            document.getElementById('app-form').reset();
-            document.getElementById('submit-btn').style.display = 'block';
-        }
-
-        function hideModal() {
-            document.getElementById('modal-overlay').style.display = 'none';
-            fetchData();
-        }
+        function showModal() { document.getElementById('modal-overlay').style.display = 'flex'; }
+        function hideModal() { document.getElementById('modal-overlay').style.display = 'none'; fetchData(); }
 
         document.getElementById('app-form').onsubmit = async (e) => {
             e.preventDefault();
@@ -497,38 +641,20 @@
                 sms_limit: parseInt(document.getElementById('app-sms-limit').value),
                 otp_limit: parseInt(document.getElementById('app-otp-limit').value)
             };
-
-            try {
-                const res = await fetch('/admin/apps', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'X-Admin-Key': ADMIN_KEY
-                    },
-                    body: JSON.stringify(payload)
-                });
-                const data = await res.json();
-                
-                if (data.api_key) {
-                    document.getElementById('generated-key').textContent = data.api_key;
-                    document.getElementById('new-key-container').style.display = 'block';
-                    document.getElementById('submit-btn').style.display = 'none';
-                }
-            } catch (err) {
-                alert('Failed to create app');
-            }
+            const res = await fetch('/admin/apps', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Admin-Key': ADMIN_KEY },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            document.getElementById('generated-key').textContent = data.api_key;
+            document.getElementById('new-key-container').style.display = 'block';
+            document.getElementById('submit-btn').style.display = 'none';
         };
 
-        function copyKey() {
-            const key = document.getElementById('generated-key').textContent;
-            navigator.clipboard.writeText(key);
-            alert('API Key copied to clipboard!');
-        }
-
-        // Initial Load
+        // Initial fetch
         fetchData();
-        // Refresh every 30 seconds
-        setInterval(fetchData, 30000);
+        setInterval(fetchData, 60000); // Balance/Apps refresh every minute
     </script>
 </body>
 </html>
