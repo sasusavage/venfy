@@ -136,3 +136,32 @@ class Database:
         finally:
             cursor.close()
             conn.close()
+
+    def get_pending_messages(self, limit: int = 50):
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            # Fetch messages that are not in terminal states
+            cursor.execute("""
+                SELECT * FROM messages 
+                WHERE vynfy_status IS NULL 
+                OR vynfy_status NOT IN ('delivered', 'failed', 'expired', 'verified')
+                LIMIT %s
+            """, (limit,))
+            return cursor.fetchall()
+        finally:
+            cursor.close()
+            conn.close()
+
+    def update_message_status(self, vynfy_message_id: str, status: str):
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE messages SET vynfy_status = %s WHERE vynfy_message_id = %s",
+                (status, vynfy_message_id)
+            )
+            conn.commit()
+        finally:
+            cursor.close()
+            conn.close()

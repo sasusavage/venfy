@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse
 
 from vynfy_service import VynfyService
 from database import Database, init_db
+import asyncio
 
 load_dotenv()
 
@@ -71,6 +72,10 @@ class AppCreateRequest(BaseModel):
     webhook_url: Optional[str] = None
     sms_limit: int = 1000
     otp_limit: int = 100
+
+class SenderIdRegisterRequest(BaseModel):
+    sender_name: str = Field(..., max_length=11)
+    purpose: str
 
 # --- Error Handler helper ---
 def handle_error(e: Exception):
@@ -143,6 +148,63 @@ async def get_master_balance(service: VynfyService = Depends(get_vynfy_service),
         return {"sms": sms, "otp": otp}
     except Exception as e:
         handle_error(e)
+
+@app.get("/admin/sync", tags=["Admin"])
+async def sync_vynfy_statuses(service: VynfyService = Depends(get_vynfy_service), x_admin_key: str = Header(None)):
+    if x_admin_key != MASTER_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    
+    pending = db.get_pending_messages(limit=20)
+    results = []
+    
+    for msg in pending:
+        try:
+            msg_id = msg['vynfy_message_id']
+            msg_type = msg['type']
+            
+            if msg_type == 'sms':
+                status_data = await service.check_sms_status(msg_id)
+                # Note: Vynfy status response structure check
+                new_status = status_data.get('data', {}).get('status') or status_data.get('status')
+            else:
+                status_data = await service.check_otp_status(msg_id)
+                new_status = status_data.get('otp', {}).get('status') or status_data.get('status')
+            
+            if new_status:
+                db.update_message_status(msg_id, new_status)
+                results.append({"id": msg_id, "status": new_status})
+        except Exception as e:
+            print(f"Error syncing status for {msg['vynfy_message_id']}: {str(e)}")
+            
+    return {"synced_count": len(results), "updates": results}
+
+# Background task loop
+async def status_polling_loop():
+    while True:
+        try:
+            # Create a service instance manually for the background task
+            if VYNFY_API_KEY and VYNFY_API_KEY != "your-api-key-here":
+                service = VynfyService(api_key=VYNFY_API_KEY)
+                pending = db.get_pending_messages(limit=10)
+                for msg in pending:
+                    msg_id = msg['vynfy_message_id']
+                    if msg['type'] == 'sms':
+                        data = await service.check_sms_status(msg_id)
+                        status = data.get('data', {}).get('status') or data.get('status')
+                    else:
+                        data = await service.check_otp_status(msg_id)
+                        status = data.get('otp', {}).get('status') or data.get('status')
+                    
+                    if status:
+                        db.update_message_status(msg_id, status)
+        except Exception as e:
+            print(f"Background sync error: {str(e)}")
+        
+        await asyncio.sleep(300) # Poll every 5 minutes
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(status_polling_loop())
 
 # ======================
 # SMS Endpoints (Vynfy v1 Match)
@@ -298,6 +360,32 @@ async def check_otp_status(
 ):
     try:
         return await service.check_otp_status(otp_id)
+    except Exception as e:
+        handle_error(e)
+
+# ======================
+# Sender ID Endpoints (Vynfy Match)
+# ======================
+
+@app.post("/sender/id/register")
+async def register_sender_id(
+    request: SenderIdRegisterRequest,
+    service: VynfyService = Depends(get_vynfy_service),
+    app_data: Any = Depends(verify_api_key)
+):
+    try:
+        return await service.register_sender_id(request.sender_name, request.purpose)
+    except Exception as e:
+        handle_error(e)
+
+@app.get("/sender/id/status")
+async def check_sender_id_status(
+    sender_name: str,
+    service: VynfyService = Depends(get_vynfy_service),
+    app_data: Any = Depends(verify_api_key)
+):
+    try:
+        return await service.check_sender_id_status(sender_name)
     except Exception as e:
         handle_error(e)
 

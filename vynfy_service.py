@@ -91,3 +91,21 @@ class VynfyService:
             response = await client.get(f"{self.base_url}/otp/status/{otp_id}", headers=self.headers)
             response.raise_for_status()
             return response.json()
+
+    # --- Sender ID ---
+    async def register_sender_id(self, sender_name: str, purpose: str) -> Dict[str, Any]:
+        payload = {
+            "sender_name": sender_name,
+            "purpose": purpose
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{self.base_url}/sender/id/register", json=payload, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+
+    async def check_sender_id_status(self, sender_name: str) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            params = {"sender_name": sender_name}
+            response = await client.get(f"{self.base_url}/sender/id/status", params=params, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
