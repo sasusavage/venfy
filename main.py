@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 
 from vynfy_service import VynfyService
-from database import Database, init_db
+from database import Database, init_db, get_connection
 import asyncio
 
 load_dotenv()
@@ -38,6 +38,10 @@ async def verify_api_key(x_api_key: str = Header(None)):
     if not x_api_key:
         raise HTTPException(status_code=401, detail="X-API-Key header missing")
     
+    # Allow Master Key for dashboard/admin use of these endpoints
+    if x_api_key == MASTER_KEY:
+        return {"id": 0, "name": "Admin", "sms_used": 0, "sms_limit": 999999, "otp_used": 0, "otp_limit": 999999}
+        
     app_data = db.get_app_by_api_key(x_api_key)
     if not app_data:
         raise HTTPException(status_code=401, detail="Invalid API Key")
@@ -156,7 +160,7 @@ async def get_message_logs(limit: int = 50, x_admin_key: str = Header(None)):
     if x_admin_key != MASTER_KEY:
         raise HTTPException(status_code=403, detail="Invalid admin key")
     
-    conn = db.get_connection()
+    conn = get_connection()
     cursor = conn.cursor()
     try:
         cursor.execute("""
