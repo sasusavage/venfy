@@ -1,0 +1,334 @@
+from fastapi import FastAPI, HTTPException, Request, Depends, Header
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
+import httpx
+import os
+import uuid
+from dotenv import load_dotenv
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
+
+from vynfy_service import VynfyService
+from database import Database, init_db
+
+load_dotenv()
+
+app = FastAPI(
+    title="Vynfy Bridge Microservice",
+    description="A bridge for Vynfy API with multi-app support and usage limits",
+    version="2.0.0"
+)
+
+db = Database()
+
+VYNFY_API_KEY = os.getenv("VYNFY_API_KEY")
+MASTER_KEY = os.getenv("MASTER_KEY", "venfy_master_secret_2024")
+
+if not VYNFY_API_KEY or VYNFY_API_KEY == "your-api-key-here":
+    print("CRITICAL: VYNFY_API_KEY is not properly set in .env")
+
+def get_vynfy_service():
+    if not VYNFY_API_KEY or VYNFY_API_KEY == "your-api-key-here":
+        raise HTTPException(status_code=500, detail="Vynfy API key not configured on server")
+    return VynfyService(api_key=VYNFY_API_KEY)
+
+# --- Authentication Dependency ---
+async def verify_api_key(x_api_key: str = Header(None)):
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="X-API-Key header missing")
+    
+    app_data = db.get_app_by_api_key(x_api_key)
+    if not app_data:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    
+    return app_data
+
+# --- Models ---
+class SmsSendRequest(BaseModel):
+    sender: str = Field(..., max_length=11)
+    recipients: Any 
+    message: str = Field(..., max_length=650)
+    metadata: Optional[Dict[str, Any]] = None
+
+class SmsScheduleRequest(SmsSendRequest):
+    schedule_time: str
+
+class OtpGenerateRequest(BaseModel):
+    number: str
+    sender_id: str = Field(..., max_length=11)
+    message: str = Field(..., max_length=160)
+    medium: str = "sms"
+    otp_type: str = "numeric"
+    expiry: int = 5
+    length: int = 6
+
+class OtpVerifyRequest(BaseModel):
+    number: str
+    code: str
+
+class AppCreateRequest(BaseModel):
+    name: str
+    webhook_url: Optional[str] = None
+    sms_limit: int = 1000
+    otp_limit: int = 100
+
+# --- Error Handler helper ---
+def handle_error(e: Exception):
+    if isinstance(e, httpx.HTTPStatusError):
+        try:
+            error_details = e.response.json()
+        except ValueError:
+            error_details = e.response.text
+        raise HTTPException(status_code=e.response.status_code, detail=error_details)
+    print(f"Error: {str(e)}")
+    raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/health")
+def health_check():
+    return {"status": "OK", "service": "Vynfy Bridge Microservice"}
+
+# --- Dashboard serving ---
+os.makedirs("static", exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def read_dashboard():
+    dashboard_path = os.path.join("static", "index.html")
+    if os.path.exists(dashboard_path):
+        with open(dashboard_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return """
+    <html>
+        <body style="font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh;">
+            <h1>Venfy Bridge is Running. Dashboard not found at static/index.html</h1>
+        </body>
+    </html>
+    """
+
+# ======================
+# Bridge Admin Endpoints
+# ======================
+
+@app.post("/admin/apps", tags=["Admin"])
+async def create_app(request: AppCreateRequest, x_admin_key: str = Header(None)):
+    if x_admin_key != MASTER_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    
+    new_api_key = f"vf_{uuid.uuid4().hex}"
+    app_id = db.create_app(
+        name=request.name,
+        api_key=new_api_key,
+        webhook_url=request.webhook_url,
+        sms_limit=request.sms_limit,
+        otp_limit=request.otp_limit
+    )
+    return {"app_id": app_id, "api_key": new_api_key, "name": request.name}
+
+@app.get("/admin/apps", tags=["Admin"])
+async def list_apps(x_admin_key: str = Header(None)):
+    if x_admin_key != MASTER_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    
+    apps = db.get_all_apps()
+    return [dict(app) for app in apps]
+
+@app.get("/admin/balance", tags=["Admin"])
+async def get_master_balance(service: VynfyService = Depends(get_vynfy_service), x_admin_key: str = Header(None)):
+    if x_admin_key != MASTER_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    
+    try:
+        sms = await service.check_sms_balance()
+        otp = await service.check_otp_balance()
+        return {"sms": sms, "otp": otp}
+    except Exception as e:
+        handle_error(e)
+
+# ======================
+# SMS Endpoints (Vynfy v1 Match)
+# ======================
+
+@app.get("/api/v1/check/balance")
+async def check_sms_balance(
+    service: VynfyService = Depends(get_vynfy_service),
+    app_data: Any = Depends(verify_api_key)
+):
+    try:
+        return await service.check_sms_balance()
+    except Exception as e:
+        handle_error(e)
+
+@app.post("/api/v1/send")
+async def send_sms(
+    request: SmsSendRequest, 
+    service: VynfyService = Depends(get_vynfy_service),
+    app_data: Any = Depends(verify_api_key)
+):
+    if app_data['sms_used'] >= app_data['sms_limit']:
+        raise HTTPException(status_code=402, detail="SMS limit reached for this application")
+
+    try:
+        recipients = request.recipients
+        if isinstance(recipients, str):
+            recipients = [recipients]
+            
+        result = await service.send_sms(
+            sender=request.sender,
+            recipients=recipients,
+            message=request.message,
+            metadata=request.metadata
+        )
+        
+        if result.get("success") and "data" in result:
+            job_id = result["data"].get("job_id")
+            if job_id:
+                db.store_message(job_id, app_data['id'], 'sms')
+                db.increment_usage(app_data['id'], 'sms', len(recipients))
+        
+        return result
+    except Exception as e:
+        handle_error(e)
+
+@app.post("/schedule/v1/send")
+async def schedule_sms(
+    request: SmsScheduleRequest, 
+    service: VynfyService = Depends(get_vynfy_service),
+    app_data: Any = Depends(verify_api_key)
+):
+    if app_data['sms_used'] >= app_data['sms_limit']:
+        raise HTTPException(status_code=402, detail="SMS limit reached for this application")
+
+    try:
+        recipients = request.recipients
+        if isinstance(recipients, str):
+            recipients = [recipients]
+
+        result = await service.schedule_sms(
+            sender=request.sender,
+            recipients=recipients,
+            message=request.message,
+            schedule_time=request.schedule_time,
+            metadata=request.metadata
+        )
+        
+        if result.get("success") and "data" in result:
+            job_id = result["data"].get("job_id")
+            if job_id:
+                db.store_message(job_id, app_data['id'], 'sms')
+                db.increment_usage(app_data['id'], 'sms', len(recipients))
+                
+        return result
+    except Exception as e:
+        handle_error(e)
+
+@app.get("/api/v1/status/{task_id}")
+async def check_sms_status(
+    task_id: str, 
+    service: VynfyService = Depends(get_vynfy_service),
+    app_data: Any = Depends(verify_api_key)
+):
+    try:
+        return await service.check_sms_status(task_id)
+    except Exception as e:
+        handle_error(e)
+
+# ======================
+# OTP Endpoints (Vynfy Match)
+# ======================
+
+@app.post("/otp/generate")
+async def generate_otp(
+    request: OtpGenerateRequest, 
+    service: VynfyService = Depends(get_vynfy_service),
+    app_data: Any = Depends(verify_api_key)
+):
+    if app_data['otp_used'] >= app_data['otp_limit']:
+        raise HTTPException(status_code=402, detail="OTP limit reached for this application")
+
+    try:
+        result = await service.generate_otp(
+            number=request.number,
+            sender_id=request.sender_id,
+            message=request.message,
+            medium=request.medium,
+            otp_type=request.otp_type,
+            expiry=request.expiry,
+            length=request.length
+        )
+        
+        if result.get("success"):
+            otp_id = str(result.get("otp_id"))
+            if otp_id:
+                db.store_message(otp_id, app_data['id'], 'otp')
+                db.increment_usage(app_data['id'], 'otp', 1)
+                
+        return result
+    except Exception as e:
+        handle_error(e)
+
+@app.post("/otp/verify")
+async def verify_otp(
+    request: OtpVerifyRequest, 
+    service: VynfyService = Depends(get_vynfy_service),
+    app_data: Any = Depends(verify_api_key)
+):
+    try:
+        return await service.verify_otp(
+            number=request.number,
+            code=request.code
+        )
+    except Exception as e:
+        handle_error(e)
+
+@app.get("/otp/balance")
+async def check_otp_balance(
+    service: VynfyService = Depends(get_vynfy_service),
+    app_data: Any = Depends(verify_api_key)
+):
+    try:
+        return await service.check_otp_balance()
+    except Exception as e:
+        handle_error(e)
+
+@app.get("/otp/status/{otp_id}")
+async def check_otp_status(
+    otp_id: str, 
+    service: VynfyService = Depends(get_vynfy_service),
+    app_data: Any = Depends(verify_api_key)
+):
+    try:
+        return await service.check_otp_status(otp_id)
+    except Exception as e:
+        handle_error(e)
+
+# ======================
+# Webhook Bridge Logic
+# ======================
+
+@app.post("/webhooks/vynfy")
+async def vynfy_webhook(request: Request):
+    payload = await request.json()
+    event = payload.get("event")
+    data = payload.get("data", {})
+    message_id = data.get("message_id")
+    
+    print(f"[BRIDGE WEBHOOK] Received event: {event} for message: {message_id}")
+    
+    if message_id:
+        app_target = db.get_app_by_message_id(message_id)
+        if app_target and app_target['webhook_url']:
+            try:
+                async with httpx.AsyncClient() as client:
+                    print(f"Forwarding to {app_target['webhook_url']}")
+                    await client.post(app_target['webhook_url'], json=payload, timeout=5.0)
+            except Exception as e:
+                print(f"Failed to forward webhook to {app_target['name']}: {str(e)}")
+        else:
+            print(f"No target app or webhook URL found for message {message_id}")
+            
+    return {"status": "success", "message": "Webhook processed by bridge"}
+
+if __name__ == "__main__":
+    import uvicorn
+    init_db()
+    uvicorn.run("main:app", host="0.0.0.0", port=3000, reload=True)

@@ -1,0 +1,93 @@
+import httpx
+from typing import Dict, Any, List, Optional
+
+class VynfyService:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://sms.vynfy.com"
+        self.headers = {
+            "X-API-Key": self.api_key,
+            "Content-Type": "application/json"
+        }
+
+    # --- SMS ---
+    async def check_sms_balance(self) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{self.base_url}/api/v1/check/balance", headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+
+    async def check_sms_status(self, task_id: str) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{self.base_url}/api/v1/status/{task_id}", headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+
+    async def send_sms(self, sender: str, recipients: List[str], message: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload = {
+            "sender": sender,
+            "recipients": recipients,
+            "message": message
+        }
+        if metadata:
+            payload["metadata"] = metadata
+            
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{self.base_url}/api/v1/send", json=payload, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+
+    async def schedule_sms(self, sender: str, recipients: List[str], message: str, schedule_time: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload = {
+            "sender": sender,
+            "recipients": recipients,
+            "message": message,
+            "schedule_time": schedule_time
+        }
+        if metadata:
+            payload["metadata"] = metadata
+            
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{self.base_url}/schedule/v1/send", json=payload, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+
+    # --- OTP ---
+    async def generate_otp(self, number: str, sender_id: str, message: str, 
+                         medium: str = "sms", otp_type: str = "numeric", 
+                         expiry: int = 5, length: int = 6) -> Dict[str, Any]:
+        payload = {
+            "number": number,
+            "sender_id": sender_id,
+            "message": message,
+            "medium": medium,
+            "otp_type": otp_type,
+            "expiry": expiry,
+            "length": length
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{self.base_url}/otp/generate", json=payload, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+
+    async def verify_otp(self, number: str, code: str) -> Dict[str, Any]:
+        payload = {
+            "number": number,
+            "code": code
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{self.base_url}/otp/verify", json=payload, headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+
+    async def check_otp_balance(self) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{self.base_url}/otp/balance", headers=self.headers)
+            response.raise_for_status()
+            return response.json()
+
+    async def check_otp_status(self, otp_id: str) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{self.base_url}/otp/status/{otp_id}", headers=self.headers)
+            response.raise_for_status()
+            return response.json()
