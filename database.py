@@ -165,3 +165,25 @@ class Database:
         finally:
             cursor.close()
             conn.close()
+
+    def reset_app_usage(self, app_id: int):
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("UPDATE apps SET sms_used = 0, otp_used = 0 WHERE id = %s", (app_id,))
+            conn.commit()
+        finally:
+            cursor.close()
+            conn.close()
+
+    def delete_app(self, app_id: int):
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            # Delete messages first due to FK
+            cursor.execute("DELETE FROM messages WHERE app_id = %s", (app_id,))
+            cursor.execute("DELETE FROM apps WHERE id = %s", (app_id,))
+            conn.commit()
+        finally:
+            cursor.close()
+            conn.close()

@@ -137,6 +137,20 @@ async def list_apps(x_admin_key: str = Header(None)):
     apps = db.get_all_apps()
     return [dict(app) for app in apps]
 
+@app.post("/admin/apps/{app_id}/reset", tags=["Admin"])
+async def reset_app_usage(app_id: int, x_admin_key: str = Header(None)):
+    if x_admin_key != MASTER_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    db.reset_app_usage(app_id)
+    return {"message": "Usage reset successfully"}
+
+@app.delete("/admin/apps/{app_id}", tags=["Admin"])
+async def delete_app(app_id: int, x_admin_key: str = Header(None)):
+    if x_admin_key != MASTER_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    db.delete_app(app_id)
+    return {"message": "App deleted successfully"}
+
 @app.get("/admin/balance", tags=["Admin"])
 async def get_master_balance(service: VynfyService = Depends(get_vynfy_service), x_admin_key: str = Header(None)):
     if x_admin_key != MASTER_KEY:
@@ -145,7 +159,17 @@ async def get_master_balance(service: VynfyService = Depends(get_vynfy_service),
     try:
         sms = await service.check_sms_balance()
         otp = await service.check_otp_balance()
-        return {"sms": sms, "otp": otp}
+        
+        # Robust parsing for dashboard
+        sms_val = sms.get('balance', {}).get('remaining') if isinstance(sms.get('balance'), dict) else sms.get('balance')
+        otp_val = otp.get('balance', {}).get('remaining') if isinstance(otp.get('balance'), dict) else otp.get('balance')
+        
+        return {
+            "sms": sms_val if sms_val is not None else "N/A",
+            "otp": otp_val if otp_val is not None else "N/A",
+            "raw_sms": sms,
+            "raw_otp": otp
+        }
     except Exception as e:
         handle_error(e)
 

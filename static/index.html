@@ -18,6 +18,7 @@
             --border: #e2e8f0;
             --success: #10b981;
             --warning: #f59e0b;
+            --danger: #ef4444;
         }
 
         * {
@@ -186,6 +187,9 @@
             transition: all 0.2s;
             border: none;
             font-family: inherit;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
         }
 
         .btn-primary {
@@ -201,6 +205,20 @@
             background: transparent;
             border: 1px solid var(--border);
             color: var(--text);
+        }
+
+        .btn-sm {
+            padding: 0.25rem 0.5rem;
+            font-size: 0.75rem;
+        }
+
+        .btn-danger {
+            background: #fee2e2;
+            color: var(--danger);
+        }
+
+        .btn-danger:hover {
+            background: #fecaca;
         }
 
         /* Modal */
@@ -269,6 +287,11 @@
             margin-top: 0.5rem;
             display: block;
         }
+        
+        .action-btns {
+            display: flex;
+            gap: 0.5rem;
+        }
     </style>
 </head>
 <body>
@@ -317,10 +340,10 @@
                     <thead>
                         <tr>
                             <th>Name</th>
-                            <th>API Key (Local)</th>
-                            <th>SMS Limit</th>
-                            <th>OTP Limit</th>
-                            <th>Status</th>
+                            <th>API Key</th>
+                            <th>SMS Usage</th>
+                            <th>OTP Usage</th>
+                            <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody id="app-table-body">
@@ -387,18 +410,32 @@
                 apps.forEach(app => {
                     const tr = document.createElement('tr');
                     const smsPercent = Math.min(100, (app.sms_used / app.sms_limit) * 100);
+                    const otpPercent = Math.min(100, (app.otp_used / app.otp_limit) * 100);
                     
                     tr.innerHTML = `
                         <td style="font-weight: 600;">${app.name}</td>
-                        <td style="font-family: monospace; color: var(--text-muted);">${app.api_key.substring(0, 8)}...${app.api_key.substring(app.api_key.length - 4)}</td>
+                        <td style="font-family: monospace; color: var(--text-muted); font-size: 0.75rem;">
+                            ${app.api_key.substring(0, 12)}...
+                            <button class="btn btn-sm btn-outline" onclick="copyValue('${app.api_key}')" style="padding: 0 4px; margin-left: 4px;">Copy</button>
+                        </td>
                         <td>
                             ${app.sms_used} / ${app.sms_limit}
                             <div style="width: 100px; height: 4px; background: #eee; margin-top: 4px; border-radius: 2px; overflow: hidden;">
                                 <div style="width: ${smsPercent}%; height: 100%; background: var(--primary);"></div>
                             </div>
                         </td>
-                        <td>${app.otp_used} / ${app.otp_limit}</td>
-                        <td><span class="badge badge-success">Active</span></td>
+                        <td>
+                             ${app.otp_used} / ${app.otp_limit}
+                             <div style="width: 100px; height: 4px; background: #eee; margin-top: 4px; border-radius: 2px; overflow: hidden;">
+                                <div style="width: ${otpPercent}%; height: 100%; background: var(--warning);"></div>
+                            </div>
+                        </td>
+                        <td>
+                            <div class="action-btns">
+                                <button class="btn btn-sm btn-outline" onclick="resetUsage(${app.id})">Reset</button>
+                                <button class="btn btn-sm btn-danger" onclick="deleteApp(${app.id})">Del</button>
+                            </div>
+                        </td>
                     `;
                     tableBody.appendChild(tr);
                 });
@@ -409,13 +446,35 @@
                 });
                 const balance = await balRes.json();
                 
-                // Note: Vynfy response structure might vary, adjust if needed
-                document.getElementById('main-sms-balance').textContent = balance.sms?.balance?.remaining || balance.sms?.balance || 'N/A';
-                document.getElementById('main-otp-balance').textContent = balance.otp?.balance?.remaining || balance.otp?.balance || 'N/A';
+                document.getElementById('main-sms-balance').textContent = balance.sms !== null ? balance.sms : 'N/A';
+                document.getElementById('main-otp-balance').textContent = balance.otp !== null ? balance.otp : 'N/A';
 
             } catch (err) {
                 console.error('Failed to fetch data', err);
             }
+        }
+
+        async function resetUsage(id) {
+            if(!confirm('Reset usage limits for this app?')) return;
+            await fetch(`/admin/apps/${id}/reset`, {
+                method: 'POST',
+                headers: { 'X-Admin-Key': ADMIN_KEY }
+            });
+            fetchData();
+        }
+
+        async function deleteApp(id) {
+            if(!confirm('Permanently delete this app and all its message logs?')) return;
+            await fetch(`/admin/apps/${id}`, {
+                method: 'DELETE',
+                headers: { 'X-Admin-Key': ADMIN_KEY }
+            });
+            fetchData();
+        }
+
+        function copyValue(val) {
+            navigator.clipboard.writeText(val);
+            alert('Copied to clipboard');
         }
 
         function showModal() {
@@ -468,6 +527,8 @@
 
         // Initial Load
         fetchData();
+        // Refresh every 30 seconds
+        setInterval(fetchData, 30000);
     </script>
 </body>
 </html>
