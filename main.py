@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request, Depends, Header
+from contextlib import asynccontextmanager
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import httpx
@@ -14,10 +15,19 @@ import asyncio
 
 load_dotenv()
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initialize DB on startup
+    init_db()
+    # Start background polling
+    asyncio.create_task(status_polling_loop())
+    yield
+
 app = FastAPI(
     title="Vynfy Bridge Microservice",
     description="A bridge for Vynfy API with multi-app support and usage limits",
-    version="2.0.0"
+    version="2.0.0",
+    lifespan=lifespan
 )
 
 db = Database()
@@ -113,6 +123,10 @@ async def read_dashboard():
         </body>
     </html>
     """
+
+@app.get("/health")
+def health_check():
+    return {"status": "OK", "service": "Vynfy Bridge Microservice"}
 
 # ======================
 # Bridge Admin Endpoints
@@ -250,10 +264,6 @@ async def status_polling_loop():
             print(f"Background sync error: {str(e)}")
         
         await asyncio.sleep(300) # Poll every 5 minutes
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(status_polling_loop())
 
 # ======================
 # SMS Endpoints (Vynfy v1 Match)
@@ -480,5 +490,4 @@ async def vynfy_webhook(request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    init_db()
     uvicorn.run("main:app", host="0.0.0.0", port=3000, reload=True)
