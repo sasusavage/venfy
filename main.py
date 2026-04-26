@@ -93,14 +93,17 @@ class SenderIdRegisterRequest(BaseModel):
 
 # --- Error Handler helper ---
 def handle_error(e: Exception):
+    err_msg = str(e)
     if isinstance(e, httpx.HTTPStatusError):
         try:
             error_details = e.response.json()
+            err_msg = f"Vynfy API Error: {error_details}"
         except ValueError:
-            error_details = e.response.text
-        raise HTTPException(status_code=e.response.status_code, detail=error_details)
-    print(f"Error: {str(e)}")
-    raise HTTPException(status_code=500, detail=str(e))
+            err_msg = f"Vynfy API Error ({e.response.status_code}): {e.response.text}"
+        raise HTTPException(status_code=e.response.status_code, detail=err_msg)
+    
+    print(f"Internal Bridge Error: {type(e).__name__} - {err_msg}")
+    raise HTTPException(status_code=500, detail=f"Internal Bridge Error: {err_msg}")
 
 @app.get("/health")
 def health_check():
@@ -195,22 +198,27 @@ async def get_master_balance(service: VynfyService = Depends(get_vynfy_service),
     if x_admin_key != MASTER_KEY:
         raise HTTPException(status_code=403, detail="Invalid admin key")
     
+    sms_val = "Error"
+    otp_val = "Error"
+    
     try:
         sms = await service.check_sms_balance()
-        otp = await service.check_otp_balance()
-        
-        # Robust parsing for dashboard
-        sms_val = sms.get('balance', {}).get('remaining') if isinstance(sms.get('balance'), dict) else sms.get('balance')
-        otp_val = otp.get('balance', {}).get('remaining') if isinstance(otp.get('balance'), dict) else otp.get('balance')
-        
-        return {
-            "sms": sms_val if sms_val is not None else "N/A",
-            "otp": otp_val if otp_val is not None else "N/A",
-            "raw_sms": sms,
-            "raw_otp": otp
-        }
+        if isinstance(sms, dict):
+            sms_val = sms.get('balance', {}).get('remaining') if isinstance(sms.get('balance'), dict) else sms.get('balance')
     except Exception as e:
-        handle_error(e)
+        print(f"Failed to fetch SMS balance: {str(e)}")
+
+    try:
+        otp = await service.check_otp_balance()
+        if isinstance(otp, dict):
+            otp_val = otp.get('balance', {}).get('remaining') if isinstance(otp.get('balance'), dict) else otp.get('balance')
+    except Exception as e:
+        print(f"Failed to fetch OTP balance: {str(e)}")
+        
+    return {
+        "sms": sms_val if sms_val is not None else "N/A",
+        "otp": otp_val if otp_val is not None else "N/A"
+    }
 
 @app.get("/admin/sync", tags=["Admin"])
 async def sync_vynfy_statuses(service: VynfyService = Depends(get_vynfy_service), x_admin_key: str = Header(None)):
