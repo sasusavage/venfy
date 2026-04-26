@@ -15,6 +15,32 @@ import asyncio
 
 load_dotenv()
 
+db = Database()
+
+# Background task loop
+async def status_polling_loop():
+    while True:
+        try:
+            # Create a service instance manually for the background task
+            if VYNFY_API_KEY and VYNFY_API_KEY != "your-api-key-here":
+                service = VynfyService(api_key=VYNFY_API_KEY)
+                pending = db.get_pending_messages(limit=10)
+                for msg in pending:
+                    msg_id = msg['vynfy_message_id']
+                    if msg['type'] == 'sms':
+                        data = await service.check_sms_status(msg_id)
+                        status = data.get('data', {}).get('status') or data.get('status')
+                    else:
+                        data = await service.check_otp_status(msg_id)
+                        status = data.get('otp', {}).get('status') or data.get('status')
+                    
+                    if status:
+                        db.update_message_status(msg_id, status)
+        except Exception as e:
+            print(f"Background sync error: {str(e)}")
+        
+        await asyncio.sleep(300) # Poll every 5 minutes
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Initialize DB on startup
@@ -29,8 +55,6 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan
 )
-
-db = Database()
 
 VYNFY_API_KEY = os.getenv("VYNFY_API_KEY")
 MASTER_KEY = os.getenv("MASTER_KEY", "venfy_master_secret_2024")
@@ -248,30 +272,6 @@ async def sync_vynfy_statuses(service: VynfyService = Depends(get_vynfy_service)
             print(f"Error syncing status for {msg['vynfy_message_id']}: {str(e)}")
             
     return {"synced_count": len(results), "updates": results}
-
-# Background task loop
-async def status_polling_loop():
-    while True:
-        try:
-            # Create a service instance manually for the background task
-            if VYNFY_API_KEY and VYNFY_API_KEY != "your-api-key-here":
-                service = VynfyService(api_key=VYNFY_API_KEY)
-                pending = db.get_pending_messages(limit=10)
-                for msg in pending:
-                    msg_id = msg['vynfy_message_id']
-                    if msg['type'] == 'sms':
-                        data = await service.check_sms_status(msg_id)
-                        status = data.get('data', {}).get('status') or data.get('status')
-                    else:
-                        data = await service.check_otp_status(msg_id)
-                        status = data.get('otp', {}).get('status') or data.get('status')
-                    
-                    if status:
-                        db.update_message_status(msg_id, status)
-        except Exception as e:
-            print(f"Background sync error: {str(e)}")
-        
-        await asyncio.sleep(300) # Poll every 5 minutes
 
 # ======================
 # SMS Endpoints (Vynfy v1 Match)
