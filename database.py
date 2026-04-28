@@ -32,10 +32,16 @@ def init_db():
         otp_limit INTEGER DEFAULT 100,
         sms_used INTEGER DEFAULT 0,
         otp_used INTEGER DEFAULT 0,
+        fixed_rate DECIMAL DEFAULT 0.0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     ''')
     
+    # Check if fixed_rate exists (for migrations)
+    cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='apps' AND column_name='fixed_rate'")
+    if not cursor.fetchone():
+        cursor.execute("ALTER TABLE apps ADD COLUMN fixed_rate DECIMAL DEFAULT 0.0")
+
     # Messages table
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS messages (
@@ -43,11 +49,19 @@ def init_db():
         vynfy_message_id TEXT UNIQUE NOT NULL,
         app_id INTEGER NOT NULL,
         type TEXT NOT NULL,
+        recipient TEXT,
+        content TEXT,
         vynfy_status TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         CONSTRAINT fk_app FOREIGN KEY (app_id) REFERENCES apps (id)
     )
     ''')
+
+    # Migration for messages table columns
+    cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='messages' AND column_name='recipient'")
+    if not cursor.fetchone():
+        cursor.execute("ALTER TABLE messages ADD COLUMN recipient TEXT")
+        cursor.execute("ALTER TABLE messages ADD COLUMN content TEXT")
     
     conn.commit()
     cursor.close()
@@ -60,17 +74,36 @@ class Database:
         pass
 
     # --- App Management ---
-    def create_app(self, name: str, api_key: str, webhook_url: Optional[str] = None, sms_limit: int = 1000, otp_limit: int = 100):
+    def create_app(self, name: str, api_key: str, webhook_url: Optional[str] = None, sms_limit: int = 1000, otp_limit: int = 100, fixed_rate: float = 0.0):
         conn = get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute(
-                "INSERT INTO apps (name, api_key, webhook_url, sms_limit, otp_limit) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                (name, api_key, webhook_url, sms_limit, otp_limit)
+                "INSERT INTO apps (name, api_key, webhook_url, sms_limit, otp_limit, fixed_rate) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                (name, api_key, webhook_url, sms_limit, otp_limit, fixed_rate)
             )
             app_id = cursor.fetchone()['id']
             conn.commit()
             return app_id
+        finally:
+            cursor.close()
+            conn.close()
+
+    def update_app(self, app_id: int, updates: Dict[str, Any]):
+        if not updates:
+            return
+        conn = get_connection()
+        cursor = conn.cursor()
+        try:
+            fields = []
+            values = []
+            for k, v in updates.items():
+                fields.append(f"{k} = %s")
+                values.append(v)
+            values.append(app_id)
+            query = f"UPDATE apps SET {', '.join(fields)} WHERE id = %s"
+            cursor.execute(query, tuple(values))
+            conn.commit()
         finally:
             cursor.close()
             conn.close()
@@ -110,13 +143,13 @@ class Database:
             conn.close()
 
     # --- Message Mapping ---
-    def store_message(self, vynfy_message_id: str, app_id: int, message_type: str):
+    def store_message(self, vynfy_message_id: str, app_id: int, message_type: str, recipient: Optional[str] = None, content: Optional[str] = None):
         conn = get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute(
-                "INSERT INTO messages (vynfy_message_id, app_id, type) VALUES (%s, %s, %s) ON CONFLICT (vynfy_message_id) DO NOTHING",
-                (vynfy_message_id, app_id, message_type)
+                "INSERT INTO messages (vynfy_message_id, app_id, type, recipient, content) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (vynfy_message_id) DO NOTHING",
+                (vynfy_message_id, app_id, message_type, recipient, content)
             )
             conn.commit()
         finally:

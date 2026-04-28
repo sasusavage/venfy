@@ -110,6 +110,14 @@ class AppCreateRequest(BaseModel):
     webhook_url: Optional[str] = None
     sms_limit: int = 1000
     otp_limit: int = 100
+    fixed_rate: float = 0.0
+
+class AppUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    webhook_url: Optional[str] = None
+    sms_limit: Optional[int] = None
+    otp_limit: Optional[int] = None
+    fixed_rate: Optional[float] = None
 
 class SenderIdRegisterRequest(BaseModel):
     sender_name: str = Field(..., max_length=11)
@@ -170,9 +178,19 @@ async def create_app(request: AppCreateRequest, x_admin_key: str = Header(None))
         api_key=new_api_key,
         webhook_url=request.webhook_url,
         sms_limit=request.sms_limit,
-        otp_limit=request.otp_limit
+        otp_limit=request.otp_limit,
+        fixed_rate=request.fixed_rate
     )
     return {"app_id": app_id, "api_key": new_api_key, "name": request.name}
+
+@app.patch("/admin/apps/{app_id}", tags=["Admin"])
+async def update_app(app_id: int, request: AppUpdateRequest, x_admin_key: str = Header(None)):
+    if x_admin_key != MASTER_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    
+    updates = request.dict(exclude_unset=True)
+    db.update_app(app_id, updates)
+    return {"message": "App updated successfully"}
 
 @app.get("/admin/apps", tags=["Admin"])
 async def list_apps(x_admin_key: str = Header(None)):
@@ -212,6 +230,7 @@ async def get_message_logs(limit: int = 50, x_admin_key: str = Header(None)):
             LIMIT %s
         """, (limit,))
         logs = cursor.fetchall()
+        # Convert Decimals for JSON if any
         return [dict(log) for log in logs]
     finally:
         cursor.close()
@@ -309,14 +328,18 @@ async def send_sms(
         )
         
         # Track message mapping for webhooks
-        if result.get("success"):
-            # Check both 'job_id' and 'message_id' in case Vynfy returns either
+        # Vynfy might return 'success': True OR 'status': 'success'
+        is_success = result.get("success") is True or result.get("status") == "success" or "data" in result
+        
+        if is_success:
             data_block = result.get("data", {})
-            job_id = data_block.get("job_id") or data_block.get("message_id")
+            job_id = data_block.get("job_id") or data_block.get("message_id") or result.get("job_id") or result.get("message_id")
             
             if job_id:
                 print(f"[STORE] Storing job_id: {job_id} for app: {app_data['name']}")
-                db.store_message(job_id, app_data['id'], 'sms')
+                # Store recipient and content for better visibility
+                recipient_str = ", ".join(recipients) if isinstance(recipients, list) else str(recipients)
+                db.store_message(job_id, app_data['id'], 'sms', recipient=recipient_str, content=request.message)
                 db.increment_usage(app_data['id'], 'sms', len(recipients))
             else:
                 print(f"[STORE WARNING] No job_id found in Vynfy response: {result}")
@@ -347,10 +370,13 @@ async def schedule_sms(
             metadata=request.metadata
         )
         
-        if result.get("success") and "data" in result:
-            job_id = result["data"].get("job_id")
+        is_success = result.get("success") is True or result.get("status") == "success" or "data" in result
+        if is_success:
+            data_block = result.get("data", {})
+            job_id = data_block.get("job_id") or data_block.get("message_id") or result.get("job_id") or result.get("message_id")
             if job_id:
-                db.store_message(job_id, app_data['id'], 'sms')
+                recipient_str = ", ".join(recipients) if isinstance(recipients, list) else str(recipients)
+                db.store_message(job_id, app_data['id'], 'sms', recipient=recipient_str, content=request.message)
                 db.increment_usage(app_data['id'], 'sms', len(recipients))
                 
         return result
@@ -392,10 +418,11 @@ async def generate_otp(
             length=request.length
         )
         
-        if result.get("success"):
-            otp_id = str(result.get("otp_id"))
+        is_success = result.get("success") is True or result.get("status") == "success" or "otp_id" in result
+        if is_success:
+            otp_id = str(result.get("otp_id") or result.get("data", {}).get("otp_id"))
             if otp_id:
-                db.store_message(otp_id, app_data['id'], 'otp')
+                db.store_message(otp_id, app_data['id'], 'otp', recipient=request.number, content=request.message)
                 db.increment_usage(app_data['id'], 'otp', 1)
                 
         return result
