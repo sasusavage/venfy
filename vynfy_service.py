@@ -13,9 +13,15 @@ class VynfyService:
     # --- SMS ---
     async def check_sms_balance(self) -> Dict[str, Any]:
         async with httpx.AsyncClient() as client:
-            response = await client.get(f"{self.base_url}/api/v1/check/balance", headers=self.headers)
-            response.raise_for_status()
-            return response.json()
+            # Try both possible endpoints
+            try:
+                response = await client.get(f"{self.base_url}/api/v1/check/balance", headers=self.headers)
+                response.raise_for_status()
+                return response.json()
+            except:
+                response = await client.get(f"{self.base_url}/api/v1/balance", headers=self.headers)
+                response.raise_for_status()
+                return response.json()
 
     async def check_sms_status(self, task_id: str) -> Dict[str, Any]:
         async with httpx.AsyncClient() as client:
@@ -99,13 +105,25 @@ class VynfyService:
             "purpose": purpose
         }
         async with httpx.AsyncClient() as client:
-            response = await client.post(f"{self.base_url}/sender/id/register", json=payload, headers=self.headers)
-            response.raise_for_status()
-            return response.json()
+            # Try /api/v1 prefix first as it's more common for their v1 API
+            try:
+                response = await client.post(f"{self.base_url}/api/v1/sender/id/register", json=payload, headers=self.headers)
+                response.raise_for_status()
+                return response.json()
+            except:
+                response = await client.post(f"{self.base_url}/sender/id/register", json=payload, headers=self.headers)
+                response.raise_for_status()
+                return response.json()
 
     async def check_sender_id_status(self, sender_name: str) -> Dict[str, Any]:
         async with httpx.AsyncClient() as client:
             params = {"sender_name": sender_name}
-            response = await client.get(f"{self.base_url}/sender/id/status", params=params, headers=self.headers)
-            response.raise_for_status()
-            return response.json()
+            try:
+                response = await client.get(f"{self.base_url}/api/v1/sender/id/status", params=params, headers=self.headers)
+                response.raise_for_status()
+                return response.json()
+            except:
+                response = await client.get(f"{self.base_url}/sender/id/status", params=params, headers=self.headers)
+                response.raise_for_status()
+                return response.json()
+                
