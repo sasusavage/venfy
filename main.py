@@ -241,22 +241,34 @@ async def get_master_balance(service: VynfyService = Depends(get_vynfy_service),
     if x_admin_key != MASTER_KEY:
         raise HTTPException(status_code=403, detail="Invalid admin key")
     
-    sms_val = "Error"
-    otp_val = "Error"
+    sms = {}
+    otp = {}
     
     try:
         sms = await service.check_sms_balance()
-        if isinstance(sms, dict):
-            sms_val = sms.get('balance', {}).get('remaining') if isinstance(sms.get('balance'), dict) else sms.get('balance')
     except Exception as e:
         print(f"Failed to fetch SMS balance: {str(e)}")
 
     try:
         otp = await service.check_otp_balance()
-        if isinstance(otp, dict):
-            otp_val = otp.get('balance', {}).get('remaining') if isinstance(otp.get('balance'), dict) else otp.get('balance')
     except Exception as e:
         print(f"Failed to fetch OTP balance: {str(e)}")
+
+    print(f"[DEBUG] Raw SMS Balance: {sms}")
+    print(f"[DEBUG] Raw OTP Balance: {otp}")
+
+    def parse_balance(data):
+        if not isinstance(data, dict):
+            return data
+        # Check various common Vynfy response formats
+        balance_obj = data.get('balance')
+        if isinstance(balance_obj, dict):
+            return balance_obj.get('remaining') or balance_obj.get('balance') or balance_obj.get('amount')
+        
+        return data.get('balance') or data.get('remaining') or data.get('credit') or data.get('amount')
+
+    sms_val = parse_balance(sms)
+    otp_val = parse_balance(otp)
         
     return {
         "sms": sms_val if sms_val is not None else "N/A",
@@ -487,6 +499,10 @@ async def check_sender_id_status(
 ):
     try:
         return await service.check_sender_id_status(sender_name)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return {"status": "not_found", "purpose": "Sender ID not registered or pending", "sender_name": sender_name}
+        handle_error(e)
     except Exception as e:
         handle_error(e)
 

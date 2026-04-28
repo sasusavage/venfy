@@ -648,7 +648,11 @@
                     headers: { 'X-API-Key': ADMIN_KEY }
                 });
                 const data = await res.json();
-                document.getElementById('sid-result').textContent = `Status: ${data.status.toUpperCase()} (Purpose: ${data.purpose})`;
+                if (data.status === 'not_found') {
+                    document.getElementById('sid-result').innerHTML = `<span style="color: var(--danger);">Status: NOT REGISTERED / PENDING</span><br><small>${data.purpose}</small>`;
+                } else {
+                    document.getElementById('sid-result').innerHTML = `<span style="color: var(--success);">Status: ${data.status.toUpperCase()}</span><br><small>Purpose: ${data.purpose}</small>`;
+                }
             } catch (err) { document.getElementById('sid-result').textContent = 'Sender ID not found or error'; }
         }
 
