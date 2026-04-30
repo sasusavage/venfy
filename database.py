@@ -175,6 +175,10 @@ class Database:
             cursor.execute("SELECT * FROM apps WHERE id = %s", (app_id,))
             return cursor.fetchone()
 
+    def reset_app_usage(self, app_id: int):
+        with get_db_cursor() as cursor:
+            cursor.execute("UPDATE apps SET sms_used = 0, otp_used = 0 WHERE id = %s", (app_id,))
+
     def get_message_logs(self, limit: int = 50):
         with get_db_cursor() as cursor:
             cursor.execute("""

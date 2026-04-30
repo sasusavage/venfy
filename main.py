@@ -182,6 +182,33 @@ async def update_app(app_id: int, request: AppUpdateRequest, x_admin_key: str = 
         
     return {"message": "App updated successfully"}
 
+@app.delete("/admin/apps/{app_id}", tags=["Admin"])
+async def delete_app(app_id: int, x_admin_key: str = Header(None)):
+    if x_admin_key != MASTER_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    
+    # Get app info for cache invalidation
+    app_data = db.get_app_by_id(app_id)
+    if app_data:
+        r.delete(f"auth:{app_data['api_key']}")
+        
+    db.delete_app(app_id)
+    return {"message": "App deleted successfully"}
+
+@app.post("/admin/apps/{app_id}/reset", tags=["Admin"])
+async def reset_app_usage(app_id: int, x_admin_key: str = Header(None)):
+    if x_admin_key != MASTER_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    
+    db.reset_app_usage(app_id)
+    
+    # Invalidate Cache
+    app_data = db.get_app_by_id(app_id)
+    if app_data:
+        r.delete(f"auth:{app_data['api_key']}")
+        
+    return {"message": "Usage reset successfully"}
+
 @app.get("/admin/apps", tags=["Admin"])
 async def list_apps(x_admin_key: str = Header(None)):
     if x_admin_key != MASTER_KEY:
