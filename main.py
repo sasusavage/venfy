@@ -281,15 +281,35 @@ async def send_sms(
             metadata=request.metadata
         )
         
+        # DEBUG TRACE: Log the actual result from Vynfy
+        logger.info(f"Vynfy Raw Response for SMS: {json.dumps(result)}")
+        
         data_block = result.get("data") if isinstance(result.get("data"), dict) else result
         job_id = data_block.get("job_id") or data_block.get("message_id") or result.get("job_id")
         
-        is_success = (result.get("success") is True or result.get("status") == "success") and job_id
+        # Robust Success Check: 
+        # 1. success is True
+        # 2. status is "success" 
+        # 3. or we simply got a job_id (meaning Vynfy accepted it)
+        is_success = (result.get("success") is True or 
+                     str(result.get("success")).lower() == "true" or 
+                     result.get("status") == "success" or 
+                     job_id is not None)
         
         if is_success:
-            logger.info(f"SMS Sent: {job_id} for {app_data['name']}")
-            db.store_message(str(job_id), app_data['id'], 'sms', recipient=", ".join(recipients), content=request.message)
+            final_job_id = str(job_id) if job_id else f"vinfy_{uuid.uuid4().hex[:8]}"
+            logger.info(f"SMS Successfully Sent/Accepted: {final_job_id} for {app_data['name']}")
+            
+            db.store_message(
+                message_id=final_job_id, 
+                app_id=app_data['id'], 
+                msg_type='sms', 
+                recipient=", ".join(recipients), 
+                content=request.message
+            )
             db.increment_usage(app_data['id'], 'sms', len(recipients))
+        else:
+            logger.warning(f"SMS might have failed or returned unexpected format for {app_data['name']}: {result}")
                 
         return result
     except Exception as e:
@@ -346,12 +366,31 @@ async def generate_otp(
             length=request.length
         )
         
+        # DEBUG TRACE: Log the actual result from Vynfy
+        logger.info(f"Vynfy Raw Response for OTP: {json.dumps(result)}")
+        
         data_block = result.get("data") if isinstance(result.get("data"), dict) else result
         otp_id = data_block.get("otp_id") or data_block.get("id") or result.get("otp_id")
         
-        if (result.get("success") is True or result.get("status") == "success") and otp_id:
-            db.store_message(str(otp_id), app_data['id'], 'otp', recipient=request.number, content=request.message)
+        is_success = (result.get("success") is True or 
+                     str(result.get("success")).lower() == "true" or 
+                     result.get("status") == "success" or 
+                     otp_id is not None)
+        
+        if is_success:
+            final_otp_id = str(otp_id) if otp_id else f"otp_{uuid.uuid4().hex[:8]}"
+            logger.info(f"OTP Successfully Generated/Accepted: {final_otp_id} for {app_data['name']}")
+            
+            db.store_message(
+                message_id=final_otp_id, 
+                app_id=app_data['id'], 
+                msg_type='otp', 
+                recipient=request.number, 
+                content=request.message
+            )
             db.increment_usage(app_data['id'], 'otp', 1)
+        else:
+            logger.warning(f"OTP might have failed or returned unexpected format for {app_data['name']}: {result}")
                 
         return result
     except Exception as e:
