@@ -228,11 +228,13 @@ async def get_master_balance(service: VynfyService = Depends(get_vynfy_service),
     otp = {}
     try:
         sms = await service.check_sms_balance()
+        logger.info(f"Vynfy Raw SMS Balance Response: {json.dumps(sms)}")
     except Exception as e:
         logger.error(f"Failed to fetch SMS balance: {str(e)}")
 
     try:
         otp = await service.check_otp_balance()
+        logger.info(f"Vynfy Raw OTP Balance Response: {json.dumps(otp)}")
     except Exception as e:
         logger.error(f"Failed to fetch OTP balance: {str(e)}")
 
