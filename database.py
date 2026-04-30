@@ -38,50 +38,47 @@ def get_db_cursor():
 
 def init_db():
     with get_db_cursor() as cursor:
-    
-    # Apps table
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS apps (
-        id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL,
-        api_key TEXT UNIQUE NOT NULL,
-        webhook_url TEXT,
-        sms_limit INTEGER DEFAULT 1000,
-        otp_limit INTEGER DEFAULT 100,
-        sms_used INTEGER DEFAULT 0,
-        otp_used INTEGER DEFAULT 0,
-        fixed_rate DECIMAL DEFAULT 0.0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
-    
-    # Check if fixed_rate exists (for migrations)
-    cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='apps' AND column_name='fixed_rate'")
-    if not cursor.fetchone():
-        cursor.execute("ALTER TABLE apps ADD COLUMN fixed_rate DECIMAL DEFAULT 0.0")
+        # Apps table
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS apps (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            api_key TEXT UNIQUE NOT NULL,
+            webhook_url TEXT,
+            sms_limit INTEGER DEFAULT 1000,
+            otp_limit INTEGER DEFAULT 100,
+            sms_used INTEGER DEFAULT 0,
+            otp_used INTEGER DEFAULT 0,
+            fixed_rate DECIMAL DEFAULT 0.0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        ''')
+        
+        # Check if fixed_rate exists (for migrations)
+        cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='apps' AND column_name='fixed_rate'")
+        if not cursor.fetchone():
+            cursor.execute("ALTER TABLE apps ADD COLUMN fixed_rate DECIMAL DEFAULT 0.0")
 
-    # Messages table
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS messages (
-        id SERIAL PRIMARY KEY,
-        vynfy_message_id TEXT UNIQUE NOT NULL,
-        app_id INTEGER NOT NULL,
-        type TEXT NOT NULL,
-        recipient TEXT,
-        content TEXT,
-        vynfy_status TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        CONSTRAINT fk_app FOREIGN KEY (app_id) REFERENCES apps (id)
-    )
-    ''')
+        # Messages table
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS messages (
+            id SERIAL PRIMARY KEY,
+            vynfy_message_id TEXT UNIQUE NOT NULL,
+            app_id INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            recipient TEXT,
+            content TEXT,
+            vynfy_status TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT fk_app FOREIGN KEY (app_id) REFERENCES apps (id)
+        )
+        ''')
 
-    # Migration for messages table columns
-    cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='messages' AND column_name='recipient'")
-    if not cursor.fetchone():
-        cursor.execute("ALTER TABLE messages ADD COLUMN recipient TEXT")
-        cursor.execute("ALTER TABLE messages ADD COLUMN content TEXT")
-    
-    conn.commit()
+        # Migration for messages table columns
+        cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='messages' AND column_name='recipient'")
+        if not cursor.fetchone():
+            cursor.execute("ALTER TABLE messages ADD COLUMN recipient TEXT")
+            cursor.execute("ALTER TABLE messages ADD COLUMN content TEXT")
 
 class Database:
     def __init__(self):
