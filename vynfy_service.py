@@ -15,7 +15,7 @@ class VynfyService:
 
     # --- SMS ---
     async def check_sms_balance(self) -> Dict[str, Any]:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(f"{self.base_url}/api/v1/check/balance", headers=self.headers)
             response.raise_for_status()
             return response.json()
@@ -86,7 +86,7 @@ class VynfyService:
             return response.json()
 
     async def check_otp_balance(self) -> Dict[str, Any]:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(f"{self.base_url}/otp/balance", headers=self.headers)
             response.raise_for_status()
             return response.json()
@@ -109,26 +109,33 @@ class VynfyService:
             return response.json()
 
     async def check_sender_id_status(self, sender_name: str) -> Dict[str, Any]:
-        async with httpx.AsyncClient() as client:
-            params = {"sender_name": sender_name.strip()}
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            name = sender_name.strip()
+            params = {"sender_name": name}
             
-            # Try path 1: /sender/id/status
-            try:
-                response = await client.get(f"{self.base_url}/sender/id/status", params=params, headers=self.headers)
-                logger.info(f"Sender ID Check (Path 1) for '{sender_name}': {response.status_code}")
-                if response.status_code == 200:
-                    return response.json()
-            except Exception as e:
-                logger.error(f"Error on Path 1: {str(e)}")
-                
-            # Try path 2: /api/v1/sender/id/status
-            try:
-                response = await client.get(f"{self.base_url}/api/v1/sender/id/status", params=params, headers=self.headers)
-                logger.info(f"Sender ID Check (Path 2) for '{sender_name}': {response.status_code}")
-                if response.status_code == 200:
-                    return response.json()
-            except Exception as e:
-                logger.error(f"Error on Path 2: {str(e)}")
-                
-            # If both fail, return a simulated 404 to main.py
-            return {"success": False, "status": "not_found", "message": "Sender ID not found on Vynfy API"}
+            # We will try the most likely paths based on Vynfy's erratic documentation
+            paths = [
+                "/sender/id/status",           # Official Docs
+                "/api/v1/sender/id/status",    # Standard Prefix
+                "/sender-id/status",           # Common Variation
+                "/api/v1/sender/status"        # Shortened Variation
+            ]
+            
+            for path in paths:
+                try:
+                    url = f"{self.base_url}{path}"
+                    response = await client.get(url, params=params, headers=self.headers)
+                    logger.info(f"Probing Vynfy path {path}: {response.status_code}")
+                    
+                    if response.status_code == 200:
+                        return response.json()
+                    
+                    # If we get a 401/403, our API key is the issue for this endpoint
+                    if response.status_code in [401, 403]:
+                        return {"status": "error", "message": f"Authentication failed on {path}"}
+                        
+                except Exception as e:
+                    logger.debug(f"Failed probe on {path}: {str(e)}")
+            
+            # If all fail
+            return {"success": False, "status": "not_found", "message": "Sender ID not found on Vynfy API after searching all known paths"}
