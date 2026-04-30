@@ -108,6 +108,6 @@ class VynfyService:
     async def check_sender_id_status(self, sender_name: str) -> Dict[str, Any]:
         async with httpx.AsyncClient() as client:
             params = {"sender_name": sender_name}
-            response = await client.get(f"{self.base_url}/api/v1/sender/id/status", params=params, headers=self.headers)
+            response = await client.get(f"{self.base_url}/sender/id/status", params=params, headers=self.headers)
             response.raise_for_status()
             return response.json()
