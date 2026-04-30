@@ -108,6 +108,20 @@ class VynfyService:
     async def check_sender_id_status(self, sender_name: str) -> Dict[str, Any]:
         async with httpx.AsyncClient() as client:
             params = {"sender_name": sender_name}
+            
+            # Try path 1: /sender/id/status
             response = await client.get(f"{self.base_url}/sender/id/status", params=params, headers=self.headers)
+            if response.status_code == 200:
+                return response.json()
+                
+            logger.info(f"Path /sender/id/status returned {response.status_code}, trying fallback...")
+            
+            # Try path 2: /api/v1/sender/id/status
+            response = await client.get(f"{self.base_url}/api/v1/sender/id/status", params=params, headers=self.headers)
+            if response.status_code == 200:
+                return response.json()
+                
+            # If both fail, log the body of the first failure (usually the most accurate)
+            logger.warning(f"Sender ID '{sender_name}' not found on any path. Last response: {response.text}")
             response.raise_for_status()
             return response.json()
