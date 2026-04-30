@@ -1,66 +1,54 @@
-from fastapi import FastAPI, HTTPException, Request, Depends, Header
+import os, logging, json, uuid
+from typing import Optional, Dict, Any, List
 from contextlib import asynccontextmanager
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+import redis
 import httpx
-import os
-import uuid
-from dotenv import load_dotenv
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, Header, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse
-
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+from database import Database
 from vynfy_service import VynfyService
-from database import Database, init_db, get_connection
-import asyncio
+from dotenv import load_dotenv
 
 load_dotenv()
 
-db = Database()
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("venfy-bridge")
 
-# Background task loop
-async def status_polling_loop():
-    while True:
-        try:
-            # Create a service instance manually for the background task
-            if VYNFY_API_KEY and VYNFY_API_KEY != "your-api-key-here":
-                service = VynfyService(api_key=VYNFY_API_KEY)
-                pending = db.get_pending_messages(limit=10)
-                for msg in pending:
-                    msg_id = msg['vynfy_message_id']
-                    if msg['type'] == 'sms':
-                        data = await service.check_sms_status(msg_id)
-                        status = data.get('data', {}).get('status') or data.get('status')
-                    else:
-                        data = await service.check_otp_status(msg_id)
-                        status = data.get('otp', {}).get('status') or data.get('status')
-                    
-                    if status:
-                        db.update_message_status(msg_id, status)
-        except Exception as e:
-            print(f"Background sync error: {str(e)}")
-        
-        await asyncio.sleep(300) # Poll every 5 minutes
+# Redis Setup
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+r = redis.from_url(REDIS_URL, decode_responses=True)
+
+db = Database()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize DB on startup
-    init_db()
-    # Start background polling
-    asyncio.create_task(status_polling_loop())
+    # Startup
+    logger.info("Initializing Venfy Bridge...")
+    try:
+        from database import init_db
+        init_db()
+        logger.info("Database initialized successfully.")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
     yield
+    # Shutdown
+    logger.info("Shutting down Venfy Bridge...")
 
 app = FastAPI(
     title="Vynfy Bridge Microservice",
-    description="A bridge for Vynfy API with multi-app support and usage limits",
-    version="2.0.0",
+    description="A high-scale bridge for Vynfy API with multi-app support and caching",
+    version="3.0.0",
     lifespan=lifespan
 )
 
 VYNFY_API_KEY = os.getenv("VYNFY_API_KEY")
 MASTER_KEY = os.getenv("MASTER_KEY", "venfy_master_secret_2024")
-
-if not VYNFY_API_KEY or VYNFY_API_KEY == "your-api-key-here":
-    print("CRITICAL: VYNFY_API_KEY is not properly set in .env")
 
 def get_vynfy_service():
     if not VYNFY_API_KEY or VYNFY_API_KEY == "your-api-key-here":
@@ -72,14 +60,20 @@ async def verify_api_key(x_api_key: str = Header(None)):
     if not x_api_key:
         raise HTTPException(status_code=401, detail="X-API-Key header missing")
     
-    # Allow Master Key for dashboard/admin use of these endpoints
     if x_api_key == MASTER_KEY:
         return {"id": 0, "name": "Admin", "sms_used": 0, "sms_limit": 999999, "otp_used": 0, "otp_limit": 999999}
+    
+    # Try Cache
+    cached = r.get(f"auth:{x_api_key}")
+    if cached:
+        return json.loads(cached)
         
     app_data = db.get_app_by_api_key(x_api_key)
     if not app_data:
         raise HTTPException(status_code=401, detail="Invalid API Key")
     
+    # Store in Cache for 5 mins
+    r.setex(f"auth:{x_api_key}", 300, json.dumps(app_data, default=str))
     return app_data
 
 # --- Models ---
@@ -134,12 +128,12 @@ def handle_error(e: Exception):
             err_msg = f"Vynfy API Error ({e.response.status_code}): {e.response.text}"
         raise HTTPException(status_code=e.response.status_code, detail=err_msg)
     
-    print(f"Internal Bridge Error: {type(e).__name__} - {err_msg}")
+    logger.error(f"Internal Bridge Error: {type(e).__name__} - {err_msg}")
     raise HTTPException(status_code=500, detail=f"Internal Bridge Error: {err_msg}")
 
 @app.get("/health")
 def health_check():
-    return {"status": "OK", "service": "Vynfy Bridge Microservice"}
+    return {"status": "OK", "service": "Vynfy Bridge v3", "redis": r.ping()}
 
 # --- Dashboard serving ---
 os.makedirs("static", exist_ok=True)
@@ -151,17 +145,7 @@ async def read_dashboard():
     if os.path.exists(dashboard_path):
         with open(dashboard_path, "r", encoding="utf-8") as f:
             return f.read()
-    return """
-    <html>
-        <body style="font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh;">
-            <h1>Venfy Bridge is Running. Dashboard not found at static/index.html</h1>
-        </body>
-    </html>
-    """
-
-@app.get("/health")
-def health_check():
-    return {"status": "OK", "service": "Vynfy Bridge Microservice"}
+    return "Dashboard index.html not found in static folder."
 
 # ======================
 # Bridge Admin Endpoints
@@ -172,151 +156,83 @@ async def create_app(request: AppCreateRequest, x_admin_key: str = Header(None))
     if x_admin_key != MASTER_KEY:
         raise HTTPException(status_code=403, detail="Invalid admin key")
     
-    new_api_key = f"vf_{uuid.uuid4().hex}"
+    api_key = f"vf_{uuid.uuid4().hex}"
     app_id = db.create_app(
         name=request.name,
-        api_key=new_api_key,
+        api_key=api_key,
         webhook_url=request.webhook_url,
         sms_limit=request.sms_limit,
         otp_limit=request.otp_limit,
         fixed_rate=request.fixed_rate
     )
-    return {"app_id": app_id, "api_key": new_api_key, "name": request.name}
+    return {"id": app_id, "api_key": api_key, "message": "App created successfully"}
 
 @app.patch("/admin/apps/{app_id}", tags=["Admin"])
 async def update_app(app_id: int, request: AppUpdateRequest, x_admin_key: str = Header(None)):
     if x_admin_key != MASTER_KEY:
         raise HTTPException(status_code=403, detail="Invalid admin key")
     
-    updates = request.dict(exclude_unset=True)
+    updates = {k: v for k, v in request.dict().items() if v is not None}
     db.update_app(app_id, updates)
+    
+    # Invalidate Cache
+    app_data = db.get_app_by_id(app_id)
+    if app_data:
+        r.delete(f"auth:{app_data['api_key']}")
+        
     return {"message": "App updated successfully"}
 
 @app.get("/admin/apps", tags=["Admin"])
 async def list_apps(x_admin_key: str = Header(None)):
     if x_admin_key != MASTER_KEY:
         raise HTTPException(status_code=403, detail="Invalid admin key")
-    
-    apps = db.get_all_apps()
-    return [dict(app) for app in apps]
-
-@app.post("/admin/apps/{app_id}/reset", tags=["Admin"])
-async def reset_app_usage(app_id: int, x_admin_key: str = Header(None)):
-    if x_admin_key != MASTER_KEY:
-        raise HTTPException(status_code=403, detail="Invalid admin key")
-    db.reset_app_usage(app_id)
-    return {"message": "Usage reset successfully"}
-
-@app.delete("/admin/apps/{app_id}", tags=["Admin"])
-async def delete_app(app_id: int, x_admin_key: str = Header(None)):
-    if x_admin_key != MASTER_KEY:
-        raise HTTPException(status_code=403, detail="Invalid admin key")
-    db.delete_app(app_id)
-    return {"message": "App deleted successfully"}
-
-@app.get("/admin/logs", tags=["Admin"])
-async def get_message_logs(limit: int = 50, x_admin_key: str = Header(None)):
-    if x_admin_key != MASTER_KEY:
-        raise HTTPException(status_code=403, detail="Invalid admin key")
-    
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("""
-            SELECT m.*, a.name as app_name 
-            FROM messages m 
-            JOIN apps a ON m.app_id = a.id 
-            ORDER BY m.created_at DESC 
-            LIMIT %s
-        """, (limit,))
-        logs = cursor.fetchall()
-        # Convert Decimals for JSON if any
-        return [dict(log) for log in logs]
-    finally:
-        cursor.close()
-        conn.close()
+    return db.get_all_apps()
 
 @app.get("/admin/balance", tags=["Admin"])
 async def get_master_balance(service: VynfyService = Depends(get_vynfy_service), x_admin_key: str = Header(None)):
     if x_admin_key != MASTER_KEY:
         raise HTTPException(status_code=403, detail="Invalid admin key")
     
+    cached_bal = r.get("master_balance")
+    if cached_bal:
+        return json.loads(cached_bal)
+        
     sms = {}
     otp = {}
-    
     try:
         sms = await service.check_sms_balance()
     except Exception as e:
-        print(f"Failed to fetch SMS balance: {str(e)}")
+        logger.error(f"Failed to fetch SMS balance: {str(e)}")
 
     try:
         otp = await service.check_otp_balance()
     except Exception as e:
-        print(f"Failed to fetch OTP balance: {str(e)}")
-
-    print(f"[DEBUG] Raw SMS Balance: {sms}")
-    print(f"[DEBUG] Raw OTP Balance: {otp}")
+        logger.error(f"Failed to fetch OTP balance: {str(e)}")
 
     def parse_balance(data):
-        if not isinstance(data, dict):
-            return data
-        # Check various common Vynfy response formats
-        balance_obj = data.get('balance')
+        if not isinstance(data, dict): return data
+        main_data = data.get('data') if isinstance(data.get('data'), dict) else data
+        balance_obj = main_data.get('balance')
         if isinstance(balance_obj, dict):
-            return balance_obj.get('remaining') or balance_obj.get('balance') or balance_obj.get('amount')
-        
-        return data.get('balance') or data.get('remaining') or data.get('credit') or data.get('amount')
+            return balance_obj.get('remaining') or balance_obj.get('balance')
+        return main_data.get('balance') or main_data.get('remaining') or main_data.get('credit') or main_data.get('amount')
 
-    sms_val = parse_balance(sms)
-    otp_val = parse_balance(otp)
-        
-    return {
-        "sms": sms_val if sms_val is not None else "N/A",
-        "otp": otp_val if otp_val is not None else "N/A"
+    result = {
+        "sms": parse_balance(sms) if parse_balance(sms) is not None else "N/A",
+        "otp": parse_balance(otp) if parse_balance(otp) is not None else "N/A"
     }
+    r.setex("master_balance", 30, json.dumps(result))
+    return result
 
-@app.get("/admin/sync", tags=["Admin"])
-async def sync_vynfy_statuses(service: VynfyService = Depends(get_vynfy_service), x_admin_key: str = Header(None)):
+@app.get("/admin/logs", tags=["Admin"])
+async def get_message_logs(limit: int = 50, x_admin_key: str = Header(None)):
     if x_admin_key != MASTER_KEY:
         raise HTTPException(status_code=403, detail="Invalid admin key")
-    
-    pending = db.get_pending_messages(limit=20)
-    results = []
-    
-    for msg in pending:
-        try:
-            msg_id = msg['vynfy_message_id']
-            msg_type = msg['type']
-            
-            if msg_type == 'sms':
-                status_data = await service.check_sms_status(msg_id)
-                # Note: Vynfy status response structure check
-                new_status = status_data.get('data', {}).get('status') or status_data.get('status')
-            else:
-                status_data = await service.check_otp_status(msg_id)
-                new_status = status_data.get('otp', {}).get('status') or status_data.get('status')
-            
-            if new_status:
-                db.update_message_status(msg_id, new_status)
-                results.append({"id": msg_id, "status": new_status})
-        except Exception as e:
-            print(f"Error syncing status for {msg['vynfy_message_id']}: {str(e)}")
-            
-    return {"synced_count": len(results), "updates": results}
+    return db.get_message_logs(limit)
 
 # ======================
-# SMS Endpoints (Vynfy v1 Match)
+# SMS Endpoints
 # ======================
-
-@app.get("/api/v1/check/balance")
-async def check_sms_balance(
-    service: VynfyService = Depends(get_vynfy_service),
-    app_data: Any = Depends(verify_api_key)
-):
-    try:
-        return await service.check_sms_balance()
-    except Exception as e:
-        handle_error(e)
 
 @app.post("/api/v1/send")
 async def send_sms(
@@ -329,9 +245,8 @@ async def send_sms(
 
     try:
         recipients = request.recipients
-        if isinstance(recipients, str):
-            recipients = [recipients]
-            
+        if isinstance(recipients, str): recipients = [recipients]
+
         result = await service.send_sms(
             sender=request.sender,
             recipients=recipients,
@@ -339,75 +254,49 @@ async def send_sms(
             metadata=request.metadata
         )
         
-        # Track message mapping for webhooks
-        # Vynfy might return 'success': True OR 'status': 'success'
-        is_success = result.get("success") is True or result.get("status") == "success" or "data" in result
+        data_block = result.get("data") if isinstance(result.get("data"), dict) else result
+        job_id = data_block.get("job_id") or data_block.get("message_id") or result.get("job_id")
+        
+        is_success = (result.get("success") is True or result.get("status") == "success") and job_id
         
         if is_success:
-            data_block = result.get("data", {})
-            job_id = data_block.get("job_id") or data_block.get("message_id") or result.get("job_id") or result.get("message_id")
-            
-            if job_id:
-                print(f"[STORE] Storing job_id: {job_id} for app: {app_data['name']}")
-                # Store recipient and content for better visibility
-                recipient_str = ", ".join(recipients) if isinstance(recipients, list) else str(recipients)
-                db.store_message(job_id, app_data['id'], 'sms', recipient=recipient_str, content=request.message)
-                db.increment_usage(app_data['id'], 'sms', len(recipients))
-            else:
-                print(f"[STORE WARNING] No job_id found in Vynfy response: {result}")
-        
-        return result
-    except Exception as e:
-        handle_error(e)
-
-@app.post("/schedule/v1/send")
-async def schedule_sms(
-    request: SmsScheduleRequest, 
-    service: VynfyService = Depends(get_vynfy_service),
-    app_data: Any = Depends(verify_api_key)
-):
-    if app_data['sms_used'] >= app_data['sms_limit']:
-        raise HTTPException(status_code=402, detail="SMS limit reached for this application")
-
-    try:
-        recipients = request.recipients
-        if isinstance(recipients, str):
-            recipients = [recipients]
-
-        result = await service.schedule_sms(
-            sender=request.sender,
-            recipients=recipients,
-            message=request.message,
-            schedule_time=request.schedule_time,
-            metadata=request.metadata
-        )
-        
-        is_success = result.get("success") is True or result.get("status") == "success" or "data" in result
-        if is_success:
-            data_block = result.get("data", {})
-            job_id = data_block.get("job_id") or data_block.get("message_id") or result.get("job_id") or result.get("message_id")
-            if job_id:
-                recipient_str = ", ".join(recipients) if isinstance(recipients, list) else str(recipients)
-                db.store_message(job_id, app_data['id'], 'sms', recipient=recipient_str, content=request.message)
-                db.increment_usage(app_data['id'], 'sms', len(recipients))
+            logger.info(f"SMS Sent: {job_id} for {app_data['name']}")
+            db.store_message(str(job_id), app_data['id'], 'sms', recipient=", ".join(recipients), content=request.message)
+            db.increment_usage(app_data['id'], 'sms', len(recipients))
                 
         return result
     except Exception as e:
         handle_error(e)
 
-@app.get("/api/v1/status/{task_id}")
-async def check_sms_status(
-    task_id: str, 
-    service: VynfyService = Depends(get_vynfy_service),
-    app_data: Any = Depends(verify_api_key)
-):
+# ======================
+# Webhook Bridge Logic
+# ======================
+
+@app.post("/webhooks/vynfy")
+async def vynfy_webhook(request: Request, background_tasks: BackgroundTasks):
+    payload = await request.json()
+    event = payload.get("event")
+    data = payload.get("data", {})
+    message_id = data.get("message_id")
+    
+    if message_id:
+        app_target = db.get_app_by_message_id(message_id)
+        if app_target:
+            db.update_message_status(message_id, event)
+            if app_target['webhook_url']:
+                background_tasks.add_task(forward_webhook, app_target['webhook_url'], payload, app_target['name'])
+            
+    return {"status": "success"}
+
+async def forward_webhook(url: str, payload: dict, app_name: str):
     try:
-        return await service.check_sms_status(task_id)
+        async with httpx.AsyncClient() as client:
+            await client.post(url, json=payload, timeout=10.0)
     except Exception as e:
-        handle_error(e)
+        logger.error(f"Failed to forward webhook to {app_name}: {str(e)}")
 
 # ======================
-# OTP Endpoints (Vynfy Match)
+# OTP Endpoints
 # ======================
 
 @app.post("/otp/generate")
@@ -430,12 +319,12 @@ async def generate_otp(
             length=request.length
         )
         
-        is_success = result.get("success") is True or result.get("status") == "success" or "otp_id" in result
-        if is_success:
-            otp_id = str(result.get("otp_id") or result.get("data", {}).get("otp_id"))
-            if otp_id:
-                db.store_message(otp_id, app_data['id'], 'otp', recipient=request.number, content=request.message)
-                db.increment_usage(app_data['id'], 'otp', 1)
+        data_block = result.get("data") if isinstance(result.get("data"), dict) else result
+        otp_id = data_block.get("otp_id") or data_block.get("id") or result.get("otp_id")
+        
+        if (result.get("success") is True or result.get("status") == "success") and otp_id:
+            db.store_message(str(otp_id), app_data['id'], 'otp', recipient=request.number, content=request.message)
+            db.increment_usage(app_data['id'], 'otp', 1)
                 
         return result
     except Exception as e:
@@ -448,10 +337,7 @@ async def verify_otp(
     app_data: Any = Depends(verify_api_key)
 ):
     try:
-        return await service.verify_otp(
-            number=request.number,
-            code=request.code
-        )
+        return await service.verify_otp(number=request.number, code=request.code)
     except Exception as e:
         handle_error(e)
 
@@ -465,19 +351,8 @@ async def check_otp_balance(
     except Exception as e:
         handle_error(e)
 
-@app.get("/otp/status/{otp_id}")
-async def check_otp_status(
-    otp_id: str, 
-    service: VynfyService = Depends(get_vynfy_service),
-    app_data: Any = Depends(verify_api_key)
-):
-    try:
-        return await service.check_otp_status(otp_id)
-    except Exception as e:
-        handle_error(e)
-
 # ======================
-# Sender ID Endpoints (Vynfy Match)
+# Sender ID Endpoints
 # ======================
 
 @app.post("/sender/id/register")
@@ -505,39 +380,6 @@ async def check_sender_id_status(
         handle_error(e)
     except Exception as e:
         handle_error(e)
-
-# ======================
-# Webhook Bridge Logic
-# ======================
-
-@app.post("/webhooks/vynfy")
-async def vynfy_webhook(request: Request):
-    payload = await request.json()
-    event = payload.get("event")
-    data = payload.get("data", {})
-    message_id = data.get("message_id")
-    
-    print(f"[BRIDGE WEBHOOK] Received event: {event} for message: {message_id}")
-    
-    if message_id:
-        app_target = db.get_app_by_message_id(message_id)
-        if app_target:
-            # Update status in our DB
-            db.update_message_status(message_id, event)
-            
-            if app_target['webhook_url']:
-                try:
-                    async with httpx.AsyncClient() as client:
-                        print(f"Forwarding {event} to {app_target['webhook_url']}")
-                        await client.post(app_target['webhook_url'], json=payload, timeout=5.0)
-                except Exception as e:
-                    print(f"Failed to forward webhook to {app_target['name']}: {str(e)}")
-            else:
-                print(f"No webhook URL set for app {app_target['name']}, status updated locally only.")
-        else:
-            print(f"CRITICAL: No target app found for message_id: {message_id}. Check if it was stored correctly.")
-            
-    return {"status": "success", "message": "Webhook processed by bridge"}
 
 if __name__ == "__main__":
     import uvicorn

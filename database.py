@@ -8,18 +8,36 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-def get_connection():
-    # psycopg2 expects 'postgresql://' but many services provide 'postgres://'
-    url = DATABASE_URL
-    if url and url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql://", 1)
-    
-    conn = psycopg2.connect(url, cursor_factory=RealDictCursor)
-    return conn
+from psycopg2.pool import ThreadedConnectionPool
+from contextlib import contextmanager
+
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Initialize connection pool
+# psycopg2 expects 'postgresql://' but many services provide 'postgres://'
+db_url = DATABASE_URL
+if db_url and db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+
+# Min 5, Max 20 connections
+pool = ThreadedConnectionPool(5, 20, db_url, cursor_factory=RealDictCursor)
+
+@contextmanager
+def get_db_cursor():
+    conn = pool.getconn()
+    try:
+        yield conn.cursor()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        pool.putconn(conn)
 
 def init_db():
-    conn = get_connection()
-    cursor = conn.cursor()
+    with get_db_cursor() as cursor:
     
     # Apps table
     cursor.execute('''
@@ -64,8 +82,6 @@ def init_db():
         cursor.execute("ALTER TABLE messages ADD COLUMN content TEXT")
     
     conn.commit()
-    cursor.close()
-    conn.close()
 
 class Database:
     def __init__(self):
@@ -75,105 +91,62 @@ class Database:
 
     # --- App Management ---
     def create_app(self, name: str, api_key: str, webhook_url: Optional[str] = None, sms_limit: int = 1000, otp_limit: int = 100, fixed_rate: float = 0.0):
-        conn = get_connection()
-        cursor = conn.cursor()
-        try:
+        with get_db_cursor() as cursor:
             cursor.execute(
                 "INSERT INTO apps (name, api_key, webhook_url, sms_limit, otp_limit, fixed_rate) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
                 (name, api_key, webhook_url, sms_limit, otp_limit, fixed_rate)
             )
-            app_id = cursor.fetchone()['id']
-            conn.commit()
-            return app_id
-        finally:
-            cursor.close()
-            conn.close()
+            return cursor.fetchone()['id']
 
     def update_app(self, app_id: int, updates: Dict[str, Any]):
         if not updates:
             return
-        conn = get_connection()
-        cursor = conn.cursor()
-        try:
+        with get_db_cursor() as cursor:
             fields = []
             values = []
             for k, v in updates.items():
                 fields.append(f"{k} = %s")
                 values.append(v)
+            
             values.append(app_id)
             query = f"UPDATE apps SET {', '.join(fields)} WHERE id = %s"
             cursor.execute(query, tuple(values))
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
 
     def get_app_by_api_key(self, api_key: str):
-        conn = get_connection()
-        cursor = conn.cursor()
-        try:
+        with get_db_cursor() as cursor:
             cursor.execute("SELECT * FROM apps WHERE api_key = %s", (api_key,))
             return cursor.fetchone()
-        finally:
-            cursor.close()
-            conn.close()
 
     def get_all_apps(self):
-        conn = get_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute("SELECT * FROM apps ORDER BY created_at DESC")
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT * FROM apps ORDER BY id ASC")
             return cursor.fetchall()
-        finally:
-            cursor.close()
-            conn.close()
 
     # --- Usage Tracking ---
-    def increment_usage(self, app_id: int, usage_type: str, amount: int = 1):
-        conn = get_connection()
-        cursor = conn.cursor()
-        try:
-            if usage_type == 'sms':
-                cursor.execute("UPDATE apps SET sms_used = sms_used + %s WHERE id = %s", (amount, app_id))
-            elif usage_type == 'otp':
-                cursor.execute("UPDATE apps SET otp_used = otp_used + %s WHERE id = %s", (amount, app_id))
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
+    def increment_usage(self, app_id: int, usage_type: str, count: int):
+        field = "sms_used" if usage_type == "sms" else "otp_used"
+        with get_db_cursor() as cursor:
+            cursor.execute(f"UPDATE apps SET {field} = {field} + %s WHERE id = %s", (count, app_id))
 
     # --- Message Mapping ---
-    def store_message(self, vynfy_message_id: str, app_id: int, message_type: str, recipient: Optional[str] = None, content: Optional[str] = None):
-        conn = get_connection()
-        cursor = conn.cursor()
-        try:
+    def store_message(self, vynfy_message_id: str, app_id: int, message_type: str, recipient: str = None, content: str = None):
+        with get_db_cursor() as cursor:
             cursor.execute(
                 "INSERT INTO messages (vynfy_message_id, app_id, type, recipient, content) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (vynfy_message_id) DO NOTHING",
                 (vynfy_message_id, app_id, message_type, recipient, content)
             )
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
 
     def get_app_by_message_id(self, vynfy_message_id: str):
-        conn = get_connection()
-        cursor = conn.cursor()
-        try:
+        with get_db_cursor() as cursor:
             cursor.execute("""
                 SELECT apps.* FROM apps 
                 JOIN messages ON apps.id = messages.app_id 
                 WHERE messages.vynfy_message_id = %s
             """, (vynfy_message_id,))
             return cursor.fetchone()
-        finally:
-            cursor.close()
-            conn.close()
 
     def get_pending_messages(self, limit: int = 50):
-        conn = get_connection()
-        cursor = conn.cursor()
-        try:
+        with get_db_cursor() as cursor:
             # Fetch messages that are not in terminal states
             cursor.execute("""
                 SELECT * FROM messages 
@@ -182,41 +155,36 @@ class Database:
                 LIMIT %s
             """, (limit,))
             return cursor.fetchall()
-        finally:
-            cursor.close()
-            conn.close()
 
     def update_message_status(self, vynfy_message_id: str, status: str):
-        conn = get_connection()
-        cursor = conn.cursor()
-        try:
+        with get_db_cursor() as cursor:
             cursor.execute(
                 "UPDATE messages SET vynfy_status = %s WHERE vynfy_message_id = %s",
                 (status, vynfy_message_id)
             )
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
 
     def reset_app_usage(self, app_id: int):
-        conn = get_connection()
-        cursor = conn.cursor()
-        try:
+        with get_db_cursor() as cursor:
             cursor.execute("UPDATE apps SET sms_used = 0, otp_used = 0 WHERE id = %s", (app_id,))
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
 
     def delete_app(self, app_id: int):
-        conn = get_connection()
-        cursor = conn.cursor()
-        try:
+        with get_db_cursor() as cursor:
             # Delete messages first due to FK
             cursor.execute("DELETE FROM messages WHERE app_id = %s", (app_id,))
             cursor.execute("DELETE FROM apps WHERE id = %s", (app_id,))
-            conn.commit()
-        finally:
-            cursor.close()
-            conn.close()
+
+    def get_app_by_id(self, app_id: int):
+        with get_db_cursor() as cursor:
+            cursor.execute("SELECT * FROM apps WHERE id = %s", (app_id,))
+            return cursor.fetchone()
+
+    def get_message_logs(self, limit: int = 50):
+        with get_db_cursor() as cursor:
+            cursor.execute("""
+                SELECT m.*, a.name as app_name 
+                FROM messages m 
+                JOIN apps a ON m.app_id = a.id 
+                ORDER BY m.created_at DESC 
+                LIMIT %s
+            """, (limit,))
+            return cursor.fetchall()
