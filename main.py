@@ -303,9 +303,9 @@ async def send_sms(
             logger.info(f"SMS Successfully Sent/Accepted: {final_job_id} for {app_data['name']}")
             
             db.store_message(
-                message_id=final_job_id, 
+                vynfy_message_id=final_job_id, 
                 app_id=app_data['id'], 
-                msg_type='sms', 
+                message_type='sms', 
                 recipient=", ".join(recipients), 
                 content=request.message
             )
@@ -384,9 +384,9 @@ async def generate_otp(
             logger.info(f"OTP Successfully Generated/Accepted: {final_otp_id} for {app_data['name']}")
             
             db.store_message(
-                message_id=final_otp_id, 
+                vynfy_message_id=final_otp_id, 
                 app_id=app_data['id'], 
-                msg_type='otp', 
+                message_type='otp', 
                 recipient=request.number, 
                 content=request.message
             )
