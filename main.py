@@ -280,6 +280,7 @@ async def send_sms(
             sender=request.sender,
             recipients=recipients,
             message=request.message,
+            tenant=app_data['name'],
             metadata=request.metadata
         )
         
@@ -365,7 +366,8 @@ async def generate_otp(
             medium=request.medium,
             otp_type=request.otp_type,
             expiry=request.expiry,
-            length=request.length
+            length=request.length,
+            tenant=app_data['name']
         )
         
         # DEBUG TRACE: Log the actual result from Vynfy

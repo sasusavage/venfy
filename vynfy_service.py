@@ -26,12 +26,14 @@ class VynfyService:
             response.raise_for_status()
             return response.json()
 
-    async def send_sms(self, sender: str, recipients: List[str], message: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def send_sms(self, sender: str, recipients: List[str], message: str, tenant: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         payload = {
             "sender": sender,
             "recipients": recipients,
             "message": message
         }
+        if tenant:
+            payload["tenant"] = tenant
         if metadata:
             payload["metadata"] = metadata
             
@@ -40,13 +42,15 @@ class VynfyService:
             response.raise_for_status()
             return response.json()
 
-    async def schedule_sms(self, sender: str, recipients: List[str], message: str, schedule_time: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def schedule_sms(self, sender: str, recipients: List[str], message: str, schedule_time: str, tenant: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         payload = {
             "sender": sender,
             "recipients": recipients,
             "message": message,
             "schedule_time": schedule_time
         }
+        if tenant:
+            payload["tenant"] = tenant
         if metadata:
             payload["metadata"] = metadata
             
@@ -58,7 +62,7 @@ class VynfyService:
     # --- OTP ---
     async def generate_otp(self, number: str, sender_id: str, message: str, 
                          medium: str = "sms", otp_type: str = "numeric", 
-                         expiry: int = 5, length: int = 6) -> Dict[str, Any]:
+                         expiry: int = 5, length: int = 6, tenant: Optional[str] = None) -> Dict[str, Any]:
         payload = {
             "number": number,      # Fallback
             "recipient": number,   # Main as per docs
@@ -69,6 +73,8 @@ class VynfyService:
             "expiry": expiry,
             "length": length
         }
+        if tenant:
+            payload["tenant"] = tenant
         async with httpx.AsyncClient() as client:
             response = await client.post(f"{self.base_url}/otp/generate", json=payload, headers=self.headers)
             response.raise_for_status()
